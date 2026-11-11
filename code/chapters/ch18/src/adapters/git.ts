@@ -7,12 +7,12 @@ import type { GitCommandResult, GitRunner } from "../features/worktrees.js";
 
 const execFileAsync = promisify(execFile);
 
-// Git 子进程边界统一校验工作目录和超时，调用方只接收结构化命令结果。
+// Git child process boundary uniformly validates working directory and timeout; callers receive only structured command results.
 export class SubprocessGitRunner implements GitRunner {
   readonly #timeoutMs: number;
 
   constructor(timeoutMs = 30_000) {
-    // 超时策略在适配器构造时固定，领域运行时不处理进程级细节。
+    // Timeout policy is fixed during adapter construction; domain runtime does not handle process-level details.
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new RangeError("timeoutMs must be positive");
     }
@@ -20,7 +20,7 @@ export class SubprocessGitRunner implements GitRunner {
   }
 
   async run(argumentsValue: readonly string[], cwd: string): Promise<GitCommandResult> {
-    // 坚持数组参数 + execFile 避免 shell 注入；工作目录必须真实存在且是目录。
+    // Enforce array arguments + execFile to prevent shell injection; the working directory must exist and be a directory.
     if (
       !Array.isArray(argumentsValue) ||
       argumentsValue.length === 0 ||
@@ -38,7 +38,7 @@ export class SubprocessGitRunner implements GitRunner {
     }
     try {
       const result = await execFileAsync("git", ["--no-pager", ...argumentsValue], {
-        // execFile 不经过 shell，数组元素直接作为 argv 传递，参数含空格或特殊字符也安全。
+        // execFile bypasses shell and passes array elements directly as argv, remaining safe even with spaces or special characters.
         cwd: workingDirectory,
         encoding: "utf8",
         timeout: this.#timeoutMs,
@@ -57,7 +57,7 @@ export class SubprocessGitRunner implements GitRunner {
         stderr?: unknown;
         killed?: unknown;
       };
-      // 超时与启动失败是不同错误类别：超时明确抛出，普通非零退出码转为结构化结果。
+      // Timeouts and startup failures are distinct error categories: timeouts throw explicitly, while normal non-zero exit codes convert to structured results.
       if (details.killed === true || details.code === "ETIMEDOUT") {
         throw new GitExecutionError("Git command timed out", { cause: error });
       }

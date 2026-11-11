@@ -15,7 +15,7 @@ import { PermissionDecision, PermissionPolicy, PermissionRequest } from "./permi
 import type { PreparedToolCall, ToolContext, ToolRegistry, ToolResult } from "./tools.js";
 import { copyToolResult, toolError } from "./tools.js";
 
-// Loop 在模型、权限与工具前后插入 Hook，但保持每个 tool call 必有回填结果。
+// Loop inserts hooks before and after model, permissions, and tools, while ensuring every tool call has a backfilled result.
 export class AgentRunError extends Error {
   override readonly name: string = "AgentRunError";
 }
@@ -44,19 +44,19 @@ export interface AgentRunnerOptions {
   readonly permissionPolicy?: PermissionPolicy;
   readonly hooks?: HookRegistry;
   readonly toolRoundObserver?: ToolRoundObserver;
-  // 请求处理器只影响下一次模型请求；工具结果处理器必须在回填前完成。
+  // Request processors affect only the next model request; tool result processors must finish before backfilling.
   readonly historyProcessor?: RequestHistoryProcessor;
   readonly toolResultProcessor?: ToolResultProcessor;
   readonly turnLifecycle?: TurnLifecycle;
 }
 
 export interface RequestHistoryProcessor {
-  // 处理器产出必须仍满足消息配对，确保压缩不破坏模型协议。
+  // Handler output must still satisfy message pairing to ensure compaction does not break model protocols.
   prepare(history: readonly ChatMessage[]): Promise<readonly ChatMessage[]>;
 }
 
-// TurnLifecycle 是记忆等跨请求能力的边界：beginTurn 在首轮前执行，
-// beforeModel 只给下一次模型请求附加上下文，complete 在最终结果返回前收尾。
+// TurnLifecycle is the boundary for cross-request capabilities such as memory: beginTurn executes before the first turn,
+// beforeModel attaches context only to the next model request; complete wraps up before returning the final result.
 export interface TurnLifecycle {
   beginTurn(query: string): Promise<void>;
   beforeModel(): readonly ChatMessage[];
@@ -68,7 +68,7 @@ export type ToolResultProcessor = (
 ) => Promise<readonly ToolResult[]> | readonly ToolResult[];
 
 export interface ToolRoundObserver {
-  // 观察器可在模型请求前提供指导，并在工具轮完成后更新内部状态。
+  // Observers can provide guidance before model requests and update internal state after tool turns complete.
   beforeModel(): readonly ChatMessage[];
   recordToolRound(toolNames: readonly string[]): void;
 }
@@ -88,7 +88,7 @@ export class AgentRunner {
   readonly #identity: string;
   readonly #permissionPolicy: PermissionPolicy | undefined;
   readonly #hooks: HookRegistry;
-  // 可选的每轮观察器：请求前注入临时指导，工具轮后更新状态。
+  // Optional per-turn observer: injects temporary guidance before requests and updates state after tool turns.
   readonly #toolRoundObserver: ToolRoundObserver | undefined;
   readonly #historyProcessor: RequestHistoryProcessor | undefined;
   readonly #toolResultProcessor: ToolResultProcessor | undefined;
@@ -136,7 +136,7 @@ export class AgentRunner {
     if (this.#turnLifecycle !== undefined) {
       await this.#turnLifecycle.beginTurn(prompt);
     }
-    // 生命周期先于首轮模型请求执行；选择失败由实现方降级，不能阻塞主 Agent。
+    // Lifecycles execute before the first model request; selection failures fall back gracefully and must not block the main Agent.
     const context: ToolContext = Object.freeze({
       workspace: this.#workspace,
       identity: this.#identity,
@@ -155,12 +155,12 @@ export class AgentRunner {
       ) {
         throw new AgentRunError("Request history processor returned invalid messages");
       }
-      // requestHistory 只决定模型本次能看到什么，canonical history 仍保持完整追加。
+      // requestHistory determines only what the model sees this turn; canonical history remains append-only in full.
       const requestHistory = Object.freeze([...preparedHistory]);
       validateToolPairing(requestHistory);
-      // 观察器指导是请求级内容，只影响当次模型输入。
-      // TODO 提醒是额外系统消息，不写入持久历史，避免重复累积。
-      // 生命周期注入只进入本次模型请求，不写入 canonical history。
+      // Observer guidance is request-level content and affects only the current model input.
+      // TODO reminders are extra system messages not written to persistent history to avoid repeated accumulation.
+      // Lifecycle injections only enter the current model request and are not written to canonical history.
       const turnGuidance =
         this.#turnLifecycle === undefined ? [] : this.#turnLifecycle.beforeModel();
       if (
@@ -207,7 +207,7 @@ export class AgentRunner {
         return await this.#complete(assistant.content, turn);
       }
 
-      // 一条 assistant 消息中的每个调用都必须回填一次，错误和拒绝也不例外。
+      // Each call in an assistant message must backfill once, including errors and denials.
       const results: ToolResult[] = [];
       const deferredContext: ChatMessage[] = [];
       let stoppedResultIndex: number | undefined;
@@ -228,7 +228,7 @@ export class AgentRunner {
         }
         results.push(result);
       }
-      // 整批工具结果先交给处理器（例如大结果落盘），再按原 tool_call_id 顺序回填。
+      // Send whole-batch tool results to processors (such as persisting large results to disk), then backfill in original tool_call_id order.
       const processedResults = await this.#processToolResults(results, assistant.toolCalls);
       for (const [index, call] of assistant.toolCalls.entries()) {
         const result = processedResults[index];
@@ -257,7 +257,7 @@ export class AgentRunner {
     results: readonly ToolResult[],
     calls: readonly ToolCall[],
   ): Promise<readonly ToolResult[]> {
-    // 结果处理器失败时整批返回受控错误，仍与原工具调用数量一一对应。
+    // When the result processor fails, return controlled errors for the whole batch, strictly matching the original tool call count one-to-one.
     if (this.#toolResultProcessor === undefined) {
       return Object.freeze(results.map((result) => copyToolResult(result)));
     }
@@ -301,13 +301,13 @@ export class AgentRunner {
       );
     }
     const effective = preHook.updatedInput === undefined ? prepared : preHook.updatedInput;
-    // Pre Hook 可阻断或建议权限，实际拒绝仍由统一权限策略裁决。
+    // Pre Hook can block or recommend permissions; unified permission policy still arbitrates actual denials.
     if (preHook.blockingError !== undefined) {
       return execution(preHook.blockingError, preHook.additionalContext);
     }
 
     if (this.#permissionPolicy !== undefined) {
-      // Hook 只提交结构化建议；系统 deny 仍在同一策略合并中拥有最高优先级。
+      // Hooks submit only structured recommendations; system deny retains highest priority in policy merging.
       try {
         const decision = await this.#permissionPolicy.decide(
           new PermissionRequest({
@@ -350,7 +350,7 @@ export class AgentRunner {
   async #complete(finalText: string, turns: number): Promise<RunResult> {
     validateToolPairing(this.#history);
     if (this.#turnLifecycle !== undefined) {
-      // complete 使用完整 canonical history，让 extractor 看到请求级压缩前的原始会话。
+      // complete uses full canonical history so the extractor sees the raw session before request-level compaction.
       await this.#turnLifecycle.complete(Object.freeze([...this.#history]));
     }
     return Object.freeze({

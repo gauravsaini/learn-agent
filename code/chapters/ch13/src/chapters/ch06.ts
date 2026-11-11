@@ -1,5 +1,5 @@
 import { runProfile } from "../cli.js";
 import { P06 } from "../core/profiles.js";
 
-// 固定入口启用 P06 的受控子代理委派能力。
+// Fixed entrypoint enables P06 controlled subagent delegation capabilities.
 process.exitCode = await runProfile(P06, process.argv.slice(2));

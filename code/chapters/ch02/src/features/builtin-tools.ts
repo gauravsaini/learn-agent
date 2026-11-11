@@ -1,8 +1,8 @@
 /**
- * 内置工具定义：P02 的能力面由 shell 与四个文件工具组成。
- * 每个工具把 Zod schema、description、effect 和 handler 绑定在一个 ToolDefinition 中。
- * description 随 z.toJSONSchema 进入模型上下文，因此既是文档也是决策提示；
- * handler 负责把领域错误映射为模型可见的稳定错误码，不改变 Agent Loop。
+ * Built-in tool definitions: the P02 capability surface consists of shell and four file tools.
+ * Each tool binds its Zod schema, description, effect, and handler in a ToolDefinition.
+ * description enters model context with z.toJSONSchema, so it is both documentation and a decision prompt;
+ * handler maps domain errors to stable error codes visible to the model. It does not modify the Agent Loop.
  */
 import { z } from "zod";
 
@@ -19,7 +19,7 @@ import type { WorkspaceFileSystem } from "../core/filesystem.js";
 import type { ToolDefinition } from "../core/tools.js";
 import { ToolRegistry, toolError, toolSuccess } from "../core/tools.js";
 
-// shell 的最小输入契约；严格对象拒绝模型附带的未声明参数。
+// Minimal input contract for shell; strict objects reject undeclared arguments from the model.
 const shellInputSchema = z.strictObject({
   command: z
     .string()
@@ -27,7 +27,7 @@ const shellInputSchema = z.strictObject({
     .describe("Exact PowerShell command to run. The process starts in the current workspace."),
 });
 
-// 工具定义将模型参数约束、效果分类和工作区执行器保持在同一处。
+// Tool definitions keep model parameter constraints, effect classifications, and workspace executors in the same place.
 export function createShellTool(commandRunner: CommandRunner): ToolDefinition<{ command: string }> {
   return {
     name: "shell",
@@ -44,7 +44,7 @@ export function createShellTool(commandRunner: CommandRunner): ToolDefinition<{ 
       }
 
       let output = result.output.length === 0 ? "(no output)" : result.output;
-      // 截断标志加入正文，让模型知道输出不代表完整命令结果。
+      // Include truncation flags in content so models know output does not represent full command results.
       if (result.truncated) {
         output = `${output}\n[output truncated]`;
       }
@@ -62,15 +62,15 @@ export function createShellTool(commandRunner: CommandRunner): ToolDefinition<{ 
   };
 }
 
-// 构建 P01 累积工具集，供 P02 在保留 shell 行为的基础上继续扩展。
+// Build the P01 cumulative toolset for P02 to extend while preserving shell behavior.
 export function createChapterOneTools(commandRunner: CommandRunner): ToolRegistry {
-  // P02 仍复用 P01 的注册结果，保证章节快照的累计行为。
+  // P02 reuses registration results from P01 to ensure cumulative behavior across chapter snapshots.
   const registry = new ToolRegistry();
   registry.register(createShellTool(commandRunner));
   return registry;
 }
 
-// 读取工具的路径和可选行数限制；路径安全性由文件系统边界二次验证。
+// Path and optional line limit for reading tool; file system boundary re-validates path safety.
 const readFileInputSchema = z.strictObject({
   path: z
     .string()
@@ -87,7 +87,7 @@ const readFileInputSchema = z.strictObject({
       "Optional maximum number of lines to return. The full file is returned when omitted.",
     ),
 });
-// 完整写入的输入契约；空 content 有意表示清空文件而非参数错误。
+// Input contract for full writes; empty content intentionally represents clearing files rather than parameter errors.
 const writeFileInputSchema = z.strictObject({
   path: z
     .string()
@@ -97,7 +97,7 @@ const writeFileInputSchema = z.strictObject({
     .string()
     .describe("UTF-8 text content to write. Use an empty string to clear the file."),
 });
-// 精确编辑的输入契约；old_text 必填且非空以防无边界插入。
+// Input contract for exact editing; old_text is required and non-empty to prevent unbounded insertion.
 const editFileInputSchema = z.strictObject({
   path: z.string().min(1).describe("Workspace-relative target file path."),
   old_text: z
@@ -110,7 +110,7 @@ const editFileInputSchema = z.strictObject({
     .string()
     .describe("Replacement text. Use an empty string to delete the matched text."),
 });
-// 文件发现的受限 glob 输入契约；父目录片段会由安全边界拒绝。
+// Restricted glob input contract for file discovery. The security boundary rejects parent directory segments.
 const globInputSchema = z.strictObject({
   pattern: z
     .string()
@@ -120,19 +120,19 @@ const globInputSchema = z.strictObject({
     ),
 });
 
-// 从 Zod schema 推导执行器输入，模型描述和实际参数类型不重复维护。
-// 从 schema 推导的读取 handler 输入，防止 TypeScript 类型与模型参数漂移。
+// Derives executor input from Zod schema; avoids maintaining model descriptions and actual parameter types redundantly.
+// Read handler input derived from schema to prevent drift between TypeScript types and model parameters.
 type ReadFileInput = z.infer<typeof readFileInputSchema>;
-// 从 schema 推导的完整写入 handler 输入。
+// Full write handler input derived from schema.
 type WriteFileInput = z.infer<typeof writeFileInputSchema>;
-// 从 schema 推导的精确编辑 handler 输入。
+// Exact edit handler input derived from schema.
 type EditFileInput = z.infer<typeof editFileInputSchema>;
-// 从 schema 推导的文件发现 handler 输入。
+// File discovery handler input derived from schema.
 type GlobInput = z.infer<typeof globInputSchema>;
 
-// 创建只读文本工具，并把文件系统领域错误转译为模型可恢复的错误码。
+// Creates read-only text tool, translating file system domain errors into model-recoverable error codes.
 function createReadFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<ReadFileInput> {
-  // 基础设施错误在这里映射为模型可见的稳定错误码。
+  // Map infrastructure errors here to stable error codes visible to the model.
   return {
     name: "read_file",
     description:
@@ -164,9 +164,9 @@ function createReadFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<Rea
   };
 }
 
-// 创建完整内容写入工具，成功时报告实际 UTF-8 字节数而不是字符数。
+// Creates full content write tool, reporting actual UTF-8 byte count instead of character count on success.
 function createWriteFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<WriteFileInput> {
-  // 每个文件工具独立映射领域错误，模型可按错误码修正下一次调用。
+  // Each file tool maps domain errors independently so the model can correct its next call by error code.
   return {
     name: "write_file",
     description:
@@ -193,9 +193,9 @@ function createWriteFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<Wr
   };
 }
 
-// 创建首个精确匹配替换工具，避免模型指定模糊行号造成不可预测编辑。
+// Create the first exact-match replacement tool to prevent unpredictable edits from fuzzy line numbers.
 function createEditFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<EditFileInput> {
-  // 编辑只替换首个精确匹配，避免模型模糊指令造成意外批量修改。
+  // Editing replaces only the first exact match, preventing vague model instructions from causing accidental bulk edits.
   return {
     name: "edit_file",
     description:
@@ -231,7 +231,7 @@ function createEditFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<Edi
   };
 }
 
-// 创建只读路径发现工具，空匹配也是正常工具结果而不是异常。
+// Creates read-only path discovery tool; empty matches are normal tool results rather than exceptions.
 function createGlobTool(fileSystem: WorkspaceFileSystem): ToolDefinition<GlobInput> {
   return {
     name: "glob",
@@ -264,7 +264,7 @@ export function createChapterTwoTools(
   commandRunner: CommandRunner,
   fileSystem: WorkspaceFileSystem,
 ): ToolRegistry {
-  // 章节能力累加：保留 P01 Shell，再注册文件读写与枚举工具。
+  // Chapter capability accumulation: retain P01 Shell, then register file read, write, and enumeration tools.
   const registry = createChapterOneTools(commandRunner);
   registry.register(createReadFileTool(fileSystem));
   registry.register(createWriteFileTool(fileSystem));

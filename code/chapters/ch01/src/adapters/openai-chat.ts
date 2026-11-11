@@ -17,20 +17,20 @@ import type {
 } from "../core/model.js";
 import type { OpenAISettings } from "../config.js";
 
-// OpenAI 适配器：把 Chat Completions SDK 的宽松返回类型收窄为核心循环使用的 ModelClient 契约。
+// OpenAI adapter: narrows loose return types of Chat Completions SDK into the ModelClient contract used by the core loop.
 //
-// normalizeResponse 对 SDK 原始响应逐层做运行时验证，拒绝非法类型、遗留 function_call、
-// 缺失字段和不支持的 finish_reason。验证在适配器边界完成，核心循环永远不接触 SDK 类型。
+// normalizeResponse validates raw SDK responses layer by layer at runtime, rejecting invalid types, legacy function_call,
+// Missing fields and unsupported finish_reason. Validation completes at the adapter boundary, and the core loop never contacts SDK types.
 //
-// 将 OpenAI SDK 的宽松响应收窄为 Agent Loop 使用的严格模型契约。
+// Narrow loose responses from OpenAI SDK into strict model contracts used by Agent Loop.
 export class OpenAIResponseError extends Error {
-  // 稳定错误名，表明失败发生在供应商响应收窄阶段。
+  // Stable error name, indicating that the failure occurred during the provider response narrowing phase.
   override readonly name = "OpenAIResponseError";
 }
 
-// 适配器实际依赖的最小 SDK 表面，允许测试替换网络客户端。
+// Minimal SDK surface actually depended on by the adapter, allowing tests to replace network clients.
 export interface OpenAIClientBoundary {
-  // 仅声明本适配器使用的 SDK 表面，使测试能注入无网络的客户端替身。
+  // Declares only the SDK surface used by this adapter so tests can inject network-free client doubles.
   readonly chat: {
     readonly completions: {
       create(request: ChatCompletionCreateParamsNonStreaming): Promise<unknown>;
@@ -38,31 +38,31 @@ export interface OpenAIClientBoundary {
   };
 }
 
-// 将已校验设置和 OpenAI SDK 封装为核心层的 ModelClient 实现。
+// Encapsulate validated settings and OpenAI SDK into ModelClient implementations for the core layer.
 export class OpenAIChatModel implements ModelClient {
-  // 可替换的 Chat Completions 调用边界；生产默认使用真实 SDK。
+  // Replaceable Chat Completions invocation boundary; production defaults to the real SDK.
   readonly #client: OpenAIClientBoundary;
-  // 配置中的默认模型；请求可按单次调用显式覆盖。
+  // Default model in configuration; requests can explicitly override per call.
   readonly #model: string;
 
-  // 使用设置创建生产客户端，或接纳替身客户端以隔离网络测试。
+  // Creates production client from settings, or accepts double client to isolate network tests.
   constructor(settings: OpenAISettings, client?: OpenAIClientBoundary) {
-    // 默认创建真实 SDK；可选 client 保持外部请求边界可替换。
+    // Defaults to creating real SDK; optional client keeps the external request boundary replaceable.
     this.#client =
       client === undefined
         ? new OpenAI({
             apiKey: settings.apiKey,
             baseURL: settings.baseUrl,
-            // 重试由第 11 章的供应商无关恢复层统一控制，SDK 不得隐藏额外请求。
+            // Retries are controlled uniformly by the provider-agnostic recovery layer from Chapter 11; the SDK must not hide additional requests.
             maxRetries: 0,
           })
         : client;
     this.#model = settings.model;
   }
 
-  // 验证历史、转换请求、调用 SDK，再将宽松响应收窄为 ModelReply。
+  // Validates history, converts request, calls SDK, then narrows loose response to ModelReply.
   async complete(request: ModelRequest): Promise<ModelReply> {
-    // 在发给供应商前验证历史，不能把配对错误伪装为远端模型故障。
+    // Validate history before sending to providers; pairing errors must not be disguised as remote model failures.
     validateToolPairing(request.messages);
     if (
       request.maxTokens !== undefined &&
@@ -86,18 +86,18 @@ export class OpenAIChatModel implements ModelClient {
   }
 }
 
-// SDK 响应完成收窄后的内部中间形状，尚未转换为核心层消息对象。
+// Internal intermediate shape of SDK response after narrowing, before conversion to core message objects.
 interface NormalizedResponse {
-  // SDK 原始响应经运行时收窄后的内部表示，避免 unknown 进入循环状态。
+  // Internal representation of raw SDK response narrowed by runtime, preventing unknown from entering loop state.
   readonly content: string | null;
   readonly calls: readonly ReturnType<typeof toolCall>[];
   readonly finishReason: FinishReason;
   readonly usage?: TokenUsage;
 }
 
-// 从未知 SDK 返回值提取唯一 choice、消息、工具调用和用量，并在边界拒绝不支持协议。
+// Extracts single choice, message, tool calls, and usage from unknown SDK return values, rejecting unsupported protocols at the boundary.
 function normalizeResponse(response: unknown): NormalizedResponse {
-  // SDK 返回值是外部不可信边界，逐层验证后才允许进入核心消息历史。
+  // SDK return value is an untrusted external boundary; validate layer by layer before allowing it into core message history.
   if (typeof response !== "object" || response === null) {
     throw new OpenAIResponseError("Chat completion response must be an object");
   }
@@ -150,9 +150,9 @@ function normalizeResponse(response: unknown): NormalizedResponse {
   });
 }
 
-// 把一项供应商函数调用转换为核心 ToolCall，保留精确错误上下文。
+// Convert a vendor function call into a core ToolCall, retaining precise error contexts.
 function normalizeToolCall(call: unknown): ReturnType<typeof toolCall> {
-  // Chat Completions 只接受 function 类型调用，并交由核心构造器验证三个字符串字段。
+  // Chat Completions accepts only function type calls and delegates validation of three string fields to core constructors.
   if (typeof call !== "object" || call === null) {
     throw new OpenAIResponseError("Tool call must be an object");
   }
@@ -173,9 +173,9 @@ function normalizeToolCall(call: unknown): ReturnType<typeof toolCall> {
   }
 }
 
-// 判断供应商结束原因是否属于核心层理解的受控集合。
+// Determine whether the provider finish reason belongs to the controlled set understood by the core layer.
 function isFinishReason(value: unknown): value is FinishReason {
-  // 白名单同时保留 legacy 值，以便 normalizeResponse 给出明确的不支持错误。
+  // The whitelist preserves legacy values so normalizeResponse can produce clear unsupported errors.
   return (
     value === "stop" ||
     value === "length" ||
@@ -185,9 +185,9 @@ function isFinishReason(value: unknown): value is FinishReason {
   );
 }
 
-// 将判别联合消息转换为 OpenAI SDK 消息形状，并保留工具调用关联 ID。
+// Convert discriminated union messages to OpenAI SDK message shapes, preserving tool call correlation IDs.
 function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
-  // 保留工具调用与 tool result 的关联字段，避免转换时破坏消息配对。
+  // Retains correlation fields between tool call and tool result to prevent breaking message pairing during conversion.
   switch (message.role) {
     case "system":
     case "user":
@@ -211,9 +211,9 @@ function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
   }
 }
 
-// 将注册表生成的供应商无关 schema 转换为 SDK 所需的函数工具对象。
+// Convert vendor-agnostic schemas generated by the registry into function tool objects required by the SDK.
 function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
-  // 工具 schema 由注册表单一来源生成，此处只转换为 SDK 请求形状。
+  // Tool schemas are generated from the registry as a single source of truth; convert only to SDK request shapes here.
   return {
     type: "function",
     function: {
@@ -224,9 +224,9 @@ function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
   };
 }
 
-// 提取并验证供应商 token 用量，确保后续预算策略接收到整数统计值。
+// Extract and validate provider token usage to ensure budget policies receive integer metric values.
 function normalizeUsage(usage: unknown): TokenUsage {
-  // 用量字段参与后续章节的恢复策略，因此必须为非负整数而非宽松转换。
+  // Usage fields participate in recovery strategies of later chapters, so they must be non-negative integers rather than loose conversions.
   if (typeof usage !== "object" || usage === null) {
     throw new OpenAIResponseError("Chat completion usage must be an object");
   }
@@ -240,7 +240,7 @@ function normalizeUsage(usage: unknown): TokenUsage {
   });
 }
 
-// 读取单个 snake_case 用量字段，拒绝负数、小数和缺失值。
+// Read a single snake_case usage field, rejecting negative numbers, decimals, and missing values.
 function readUsageCount(usage: object, field: string): number {
   const value = Reflect.get(usage, field);
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {

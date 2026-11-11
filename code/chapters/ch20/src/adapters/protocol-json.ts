@@ -1,4 +1,4 @@
-// JsonProtocolStore 适配器：将协议请求持久化为单文件 state.json，用进程内互斥和文件锁保证原子读改写。
+// JsonProtocolStore adapter: persists protocol requests to single-file state.json, using in-process mutex and file locks to guarantee atomic read-modify-writes.
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,39 +25,39 @@ import {
 } from "../features/mailbox.js";
 
 const STATE_VERSION = 1;
-// 进程内 Promise 尾队列，对同一 workspace 串行化同时进入 #withLock 的多个调用，与 proper-lockfile 构成双重锁。
+// In-process Promise tail queue serializes multiple calls entering #withLock concurrently for the same workspace, forming a double lock with proper-lockfile.
 const tails = new Map<string, Promise<void>>();
 
 export interface JsonProtocolStoreOptions {
-  // 测试可注入确定 UUID；生产默认 randomUUID，结果仍需规范化校验。
+  // Tests can inject a deterministic UUID; production defaults to randomUUID, and the result still requires normalization validation.
   readonly idGenerator?: () => string;
-  // 创建、过期与 resolution 时间都来自同一时钟边界。
+  // Creation, expiration, and resolution times all originate from the same clock boundary.
   readonly clock?: () => Date;
-  // pending 请求有效窗口；过期请求保留在快照中但不可再消费。
+  // Valid window for pending requests; expired requests remain in snapshots but cannot be consumed.
   readonly requestTtlMs?: number;
-  // 测试可替换原子写；生产实现保证旧文件或新文件二选一可见。
+  // Tests can replace atomic write; the production implementation guarantees visibility of either the old or new file.
   readonly atomicReplace?: (path: string, content: Buffer) => Promise<void>;
 }
-// 路径固定位于 workspace/.agent_tutorial/protocol/，锁文件 .protocol.lock 在 stateRoot 下。
+// The path is fixed at workspace/.agent_tutorial/protocol/, and lock file .protocol.lock resides under stateRoot.
 interface Paths {
-  // realpath 后的工作区根，用作互斥键和路径逃逸校验基准。
+  // Workspace root after realpath, used as mutex key and baseline for path escape checks.
   readonly workspace: string;
-  // 协议状态目录 `.agent_tutorial/protocol`。
+  // Protocol state directory `.agent_tutorial/protocol`.
   readonly root: string;
-  // 单一 JSON 快照路径，包含全部请求历史和终态。
+  // Single JSON snapshot path containing all request history and terminal states.
   readonly state: string;
-  // proper-lockfile 使用的跨进程锁路径。
+  // Cross-process lock path used by proper-lockfile.
   readonly lock: string;
 }
-// StoredState 是磁盘 JSON 的未信任外壳，具体请求随后逐项严格解析。
+// StoredState is an untrusted shell for disk JSON; concrete requests are subsequently parsed strictly item by item.
 interface StoredState {
-  // 版本不匹配时整份快照拒绝加载，避免静默误读旧 schema。
+  // If the version does not match, the entire snapshot refuses to load to avoid silently misreading old schemas.
   readonly version: number;
-  // 保持 unknown，必须经 parseRequest 才能进入领域层。
+  // Keeps unknown, must pass parseRequest before entering domain layer.
   readonly requests: readonly unknown[];
 }
 
-// RequestData 统一承接新建请求和磁盘反序列化两条未信任输入路径。
+// RequestData uniformly receives two untrusted input paths: new requests and disk deserialization.
 interface RequestData {
   readonly id: unknown;
   readonly kind: unknown;
@@ -70,32 +70,32 @@ interface RequestData {
   readonly resolution?: unknown;
 }
 
-// JsonProtocolStore 将所有协议请求保存为单一 state.json 快照。
-// 两层锁保障原子性：
-//   1. 进程内 mutex（Promise 尾队列）串行化同一进程内多实例并发。
-//   2. proper-lockfile 目录锁串行化跨进程/跨 Runtime 访问。
+// JsonProtocolStore saves all protocol requests as a single state.json snapshot.
+// Two layers of locks guarantee atomicity:
+//   1. In-process mutex (Promise tail queue) serializes multi-instance concurrency within the same process.
+//   2. proper-lockfile directory lock serializes cross-process/cross-Runtime access.
 export class JsonProtocolStore implements ProtocolStore {
-  // 保留调用方路径，首次操作时才 realpath 并确认真实目录。
+  // Preserves caller path, performing realpath and confirming real directory only on first operation.
   readonly #workspaceInput: string;
-  // 仅在锁内创建请求时调用，生成值必须是 canonical UUID。
+  // Called only when creating requests inside the lock; generated value must be a canonical UUID.
   readonly #idGenerator: () => string;
-  // 每次读取后复制 Date，防止注入方继续修改原对象。
+  // Copy Date after each read to prevent injectors from modifying the original object.
   readonly #clock: () => Date;
-  // 所有请求共享构造时确定的有效期策略。
+  // All requests share the expiration policy determined at construction.
   readonly #ttlMs: number;
-  // 所有快照写入都经同一个可替换原子边界。
+  // All snapshot writes pass through the same replaceable atomic boundary.
   readonly #atomicReplace: (path: string, content: Buffer) => Promise<void>;
-  // 构建时校验 workspace 非空和 ttlMs 为正整数；idGenerator/clock/atomicReplace 测试可注入。
+  // Validate non-empty workspace and positive integer ttlMs at build time; tests can inject idGenerator, clock, and atomicReplace.
   constructor(workspace: string, options: JsonProtocolStoreOptions = {}) {
     if (typeof workspace !== "string" || workspace.trim().length === 0)
       throw new TypeError("workspace must be a non-empty string");
     this.#workspaceInput = workspace;
-    // 默认使用 randomUUID；测试可注入确定 UUID。
+    // Defaults to randomUUID; tests can inject deterministic UUIDs.
     this.#idGenerator = options.idGenerator ?? randomUUID;
     this.#clock = options.clock ?? (() => new Date());
     this.#ttlMs = options.requestTtlMs ?? 300_000;
     this.#atomicReplace = options.atomicReplace ?? atomicReplace;
-    // TTL 为正整数，过期后 #requireCurrent 会拒绝操作。
+    // TTL is a positive integer; #requireCurrent rejects operations after expiration.
     if (!Number.isInteger(this.#ttlMs) || this.#ttlMs <= 0)
       throw new TypeError("requestTtlMs must be positive");
   }
@@ -105,9 +105,9 @@ export class JsonProtocolStore implements ProtocolStore {
     readonly target: string;
     readonly content: string;
   }): Promise<ProtocolRequest> {
-    // 校验、追加与持久化都位于同一锁内，避免并发请求覆盖彼此。
+    // Validation, append, and persistence occur in the same lock to avoid concurrent requests overwriting each other.
     return await this.#withLock(true, async (paths) => {
-      // 锁内重新读取快照，避免基于过期内存状态追加请求。
+      // Re-reads the snapshot within the lock to avoid appending requests based on stale in-memory state.
       const state = await this.#load(paths);
       let id: string;
       try {
@@ -121,7 +121,7 @@ export class JsonProtocolStore implements ProtocolStore {
         throw new ProtocolStorageError(`Protocol request id already exists: ${id}`);
       const now = this.#now();
       const last = state.at(-1);
-      // 状态数组按创建顺序追加；时钟倒退时显式失败，避免“最新计划”被错误重排。
+      // State arrays append in creation order; fail explicitly on clock regression to prevent the "latest plan" from being reordered incorrectly.
       if (last !== undefined && now.valueOf() < last.createdAtUtc.valueOf())
         throw new ProtocolStorageError("Protocol clock moved backwards");
       let request: ProtocolRequest;
@@ -143,7 +143,7 @@ export class JsonProtocolStore implements ProtocolStore {
     });
   }
   async getPendingRequest(id: string): Promise<ProtocolRequest> {
-    // 只读查询也要经过同一套锁与解析，避免读到另一个并发写入的中间快照。
+    // Read-only queries also pass through the same locking and parsing to avoid reading intermediate snapshots from concurrent writes.
     return await this.#withLock(
       false,
       async (paths) => {
@@ -155,7 +155,7 @@ export class JsonProtocolStore implements ProtocolStore {
     );
   }
   async getRequest(id: string): Promise<ProtocolRequest> {
-    // 任意状态查询统一返回当前持久快照；state 不存在时由 find 给出确定错误。
+    // Any state query returns current durable snapshot; find gives a definitive error if state does not exist.
     return await this.#withLock(
       false,
       async (paths) => find(await this.#load(paths), id),
@@ -163,7 +163,7 @@ export class JsonProtocolStore implements ProtocolStore {
     );
   }
   async listRequests(): Promise<readonly ProtocolRequest[]> {
-    // 列表只用于诊断或测试，不在锁外缓存状态，保证每次返回都是最新快照。
+    // List is used only for diagnostics or testing and does not cache state outside lock, guaranteeing every return is the latest snapshot.
     return await this.#withLock(
       false,
       async (paths) => await this.#load(paths),
@@ -171,7 +171,7 @@ export class JsonProtocolStore implements ProtocolStore {
     );
   }
   async latestPlanRequest(sender: string): Promise<ProtocolRequest | undefined> {
-    // “最新计划”由锁内数组顺序决定，不以 UUID 文本或请求 ID 排序。
+    // Array order within the lock determines the "latest plan", not UUID text or request ID sorting.
     return await this.#withLock(
       false,
       async (paths) => {
@@ -190,7 +190,7 @@ export class JsonProtocolStore implements ProtocolStore {
     );
   }
   async validateRequest(message: ProtocolMailboxMessage): Promise<ProtocolRequest> {
-    // 请求方向只读校验：确认 typed message 与持久化 request 完全配对，不迁移状态。
+    // Read-only validation for request direction: verify typed message matches persisted request completely without transitioning state.
     return await this.#withLock(
       false,
       async (paths) => {
@@ -202,7 +202,7 @@ export class JsonProtocolStore implements ProtocolStore {
     );
   }
   async validateResponse(message: ProtocolMailboxMessage): Promise<ProtocolRequest> {
-    // 响应方向只读校验：Lead drain 阶段只验证，等到 ack 阶段才真正消费。
+    // Read-only validation for response direction: the Lead drain phase only validates, deferring real consumption to the ack phase.
     return await this.#withLock(
       false,
       async (paths) => {
@@ -214,13 +214,13 @@ export class JsonProtocolStore implements ProtocolStore {
     );
   }
   async consumeResponse(message: ProtocolMailboxMessage): Promise<ProtocolRequest> {
-    // 这是唯一把 pending 原子迁移到 approved/rejected 的存储操作。
+    // This is the only storage operation that atomically transitions pending to approved/rejected.
     return await this.#withLock(
       false,
       async (paths) => {
         const state = await this.#load(paths);
         const request = find(state, message.requestId);
-        // 已 resolved 且是同一条响应时幂等返回；另一个 message 重试同一请求则明确拒绝。
+        // Return idempotently when resolved with the same response; explicitly reject when another message retries the same request.
         if (request.status !== ProtocolRequestStatus.Pending) {
           if (sameResponse(request, message)) return request;
           throw new ProtocolStateError(`Protocol request is already resolved: ${request.id}`);
@@ -248,7 +248,7 @@ export class JsonProtocolStore implements ProtocolStore {
       async () => find([], message.requestId),
     );
   }
-  // 先取进程内 mutex，再取 proper-lockfile 目录锁，保证锁内操作是跨实例的原子读改写。
+  // Acquires in-process mutex first, then acquires proper-lockfile directory lock, ensuring operations inside lock are atomic read-modify-write across instances.
   async #withLock<T>(
     create: boolean,
     operation: (paths: Paths) => Promise<T>,
@@ -256,7 +256,7 @@ export class JsonProtocolStore implements ProtocolStore {
       throw new ProtocolStorageError("Protocol state root is unavailable");
     },
   ): Promise<T> {
-    // create=false 且目录不存在时执行 missing，避免只读查询创建运行时文件。
+    // When create=false and directory does not exist, execute missing to prevent read-only queries creating runtime files.
     const paths = await this.#paths(create);
     if (paths === undefined) return await missing();
     return await mutex(paths.workspace, async () => {
@@ -300,7 +300,7 @@ export class JsonProtocolStore implements ProtocolStore {
     });
   }
   async #paths(create: boolean): Promise<Paths | undefined> {
-    // 解析真实 workspace，并创建或校验 .agent_tutorial/protocol 状态目录；非创建模式目录缺失时返回 undefined。
+    // Resolve real workspace, creating or validating .agent_tutorial/protocol state directory; return undefined when missing in non-create mode.
     let workspace: string;
     try {
       workspace = await realpath(this.#workspaceInput);
@@ -345,7 +345,7 @@ export class JsonProtocolStore implements ProtocolStore {
     });
   }
   async #load(paths: Paths): Promise<readonly ProtocolRequest[]> {
-    // 读取 state.json 并校验版本、字段、id 唯一性与创建顺序；文件不存在时视为空状态。
+    // Read state.json and validate version, fields, id uniqueness, and creation order; treat missing file as empty state.
     try {
       const stateInfo = await lstat(paths.state);
       if (!stateInfo.isFile())
@@ -376,7 +376,7 @@ export class JsonProtocolStore implements ProtocolStore {
     }
   }
   async #persist(paths: Paths, requests: readonly ProtocolRequest[]): Promise<void> {
-    // 统一经 atomicReplace 持久化快照；写入失败时旧 state.json 保持不变。
+    // Persist snapshots uniformly via atomicReplace; old state.json remains unchanged if write fails.
     const content = Buffer.from(
       `${JSON.stringify({ version: STATE_VERSION, requests: requests.map(serializeRequest) }, null, 2)}\n`,
       "utf8",
@@ -388,7 +388,7 @@ export class JsonProtocolStore implements ProtocolStore {
     }
   }
   #now(): Date {
-    // 时钟注入可返回确定时间；无效 Date 在进入状态机前统一转成存储错误。
+    // Clock injection can return deterministic times. Convert invalid Dates into storage errors before entering the state machine.
     try {
       const now = this.#clock();
       if (!(now instanceof Date) || !Number.isFinite(now.valueOf()))
@@ -399,7 +399,7 @@ export class JsonProtocolStore implements ProtocolStore {
     }
   }
   #requireCurrent(request: ProtocolRequest, now = this.#now()): void {
-    // pending 且未过期才可参与状态迁移；已 resolved 或过期分别映射为状态错误和过期错误。
+    // Only pending and unexpired items participate in state transitions; resolved or expired map to state and expiration errors.
     if (request.status !== ProtocolRequestStatus.Pending)
       throw new ProtocolStateError(`Protocol request is already resolved: ${request.id}`);
     if (now.valueOf() >= request.expiresAtUtc.valueOf())
@@ -411,7 +411,7 @@ export class JsonProtocolStore implements ProtocolStore {
     response: boolean,
     now = this.#now(),
   ): void {
-    // 校验 message 与 request 的 kind、sender、recipient 和内容完全对应，防止错投递或伪造响应。
+    // Validate exact correspondence of kind, sender, recipient, and content between message and request to prevent misdelivery or forged responses.
     const expected = response
       ? request.kind === ProtocolRequestKind.Shutdown
         ? ProtocolMessageKind.ShutdownResponse
@@ -438,7 +438,7 @@ export class JsonProtocolStore implements ProtocolStore {
 }
 
 function makeRequest(input: RequestData): ProtocolRequest {
-  // 构造不可变 ProtocolRequest，校验必需字段、sender!=target、有效时间区间及状态与 resolution 的一致性。
+  // Construct immutable ProtocolRequest and validate required fields, sender!=target, valid time range, and status-resolution consistency.
   if (!(input.createdAtUtc instanceof Date) || !Number.isFinite(input.createdAtUtc.valueOf()))
     throw new ProtocolStorageError("Protocol request fields failed validation");
   if (!(input.expiresAtUtc instanceof Date) || !Number.isFinite(input.expiresAtUtc.valueOf()))
@@ -489,7 +489,7 @@ function makeRequest(input: RequestData): ProtocolRequest {
   });
 }
 function serializeRequest(request: ProtocolRequest): Record<string, unknown> {
-  // 持久化字段使用 snake_case，与内存 camelCase 的转换只在序列化边界发生。
+  // Persistent fields use snake_case; conversions with in-memory camelCase occur at serialization boundaries only.
   return {
     id: request.id,
     kind: request.kind,
@@ -511,7 +511,7 @@ function serializeRequest(request: ProtocolRequest): Record<string, unknown> {
   };
 }
 function parseRequest(value: unknown): ProtocolRequest {
-  // 反序列化时拒绝未知字段或缺失字段，磁盘输入不能绕过领域校验。
+  // Reject unknown or missing fields during deserialization; disk input must not bypass domain validation.
   if (!isRecord(value)) throw new Error("invalid request");
   const expected = [
     "content",
@@ -542,7 +542,7 @@ function parseRequest(value: unknown): ProtocolRequest {
   });
 }
 function find(requests: readonly ProtocolRequest[], id: string): ProtocolRequest {
-  // 按规范化 UUID 查找请求，不存在时抛 ProtocolNotFoundError。
+  // Find the request by canonical UUID. Throw ProtocolNotFoundError if it does not exist.
   let normalized: string;
   try {
     normalized = canonicalMailboxMessageId(id);
@@ -555,8 +555,8 @@ function find(requests: readonly ProtocolRequest[], id: string): ProtocolRequest
   return request;
 }
 function sameResponse(request: ProtocolRequest, message: ProtocolMailboxMessage): boolean {
-  // message id、decision 与 content 全同才算同一次响应的幂等重放。
-  // 比较完整响应内容，判断是否是对同一请求、同一条已消费响应的幂等重试。
+  // message id, decision, and content must all match to count as an idempotent replay of the same response.
+  // Compare full response contents to determine if this is an idempotent retry of the same request and consumed response.
   const r = request.resolution;
   return (
     r !== null &&
@@ -572,23 +572,23 @@ function sameResponse(request: ProtocolRequest, message: ProtocolMailboxMessage)
   );
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
-  // JSON 对象守卫排除 null 与数组，供后续精确字段检查复用。
+  // JSON object guard excludes null and arrays for reuse in subsequent exact field checks.
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function requireString(value: unknown, label: string): string {
-  // 持久化文本必须是非空字符串，调用方字段名只用于稳定错误定位。
+  // Persisted text must be non-empty strings; caller field names are used only for stable error localization.
   if (typeof value !== "string" || value.trim().length === 0)
     throw new ProtocolStorageError(`Protocol ${label} must not be empty`);
   return value;
 }
 function requireEnum<T extends string>(value: unknown, values: readonly T[]): T {
-  // 磁盘枚举必须属于当前封闭集合，不接受未知未来值静默降级。
+  // On-disk enums must belong to the current closed set, and unknown future values must not silently downgrade.
   if (typeof value !== "string" || !values.includes(value as T))
     throw new ProtocolStorageError("Protocol request fields failed validation");
   return value as T;
 }
 function parseDate(value: unknown): Date {
-  // 仅接受可解析且规范化为同一 ISO 字符串的 UTC 时间。
+  // Accepts only UTC times that parse and normalize to the same ISO string.
   if (typeof value !== "string" || !value.endsWith("Z")) throw new Error("invalid date");
   const date = new Date(value);
   if (!Number.isFinite(date.valueOf()) || date.toISOString() !== value)
@@ -596,7 +596,7 @@ function parseDate(value: unknown): Date {
   return date;
 }
 function parseResolution(value: unknown): ProtocolResolution {
-  // resolution 只允许四个持久字段，额外字段视为 schema 漂移。
+  // resolution allows only four persistent fields; extra fields are considered schema drift.
   if (!isRecord(value)) throw new Error("invalid resolution");
   const expected = ["approved", "content", "message_id", "resolved_at_utc"];
   const keys = Object.keys(value).sort();
@@ -611,7 +611,7 @@ function parseResolution(value: unknown): ProtocolResolution {
   });
 }
 function normalizeResolution(value: unknown): ProtocolResolution {
-  // 内存创建路径同样复制并冻结 resolution，防止外部对象后续变更。
+  // In-memory creation path also copies and freezes resolution to prevent subsequent changes to external objects.
   if (
     !isRecord(value) ||
     typeof value.messageId !== "string" ||
@@ -631,18 +631,18 @@ function normalizeResolution(value: unknown): ProtocolResolution {
   });
 }
 function requireBoolean(value: unknown): boolean {
-  // 审批结论必须显式为 boolean，不能把字符串或数值做宽松转换。
+  // Approval conclusions must explicitly be boolean; cannot loosely convert strings or numbers.
   if (typeof value !== "boolean") throw new Error("invalid boolean");
   return value;
 }
 function requireResponseDecision(message: ProtocolMailboxMessage): boolean {
-  // 响应缺少 decision 时拒绝状态迁移，不从正文猜测审批结果。
+  // Reject state transitions when responses lack a decision; do not guess approval outcomes from body text.
   if (message.approved === null)
     throw new ProtocolMismatchError("Protocol response is missing its decision");
   return message.approved;
 }
 function isStoredState(value: unknown): value is StoredState {
-  // 最外层仅允许 version/requests 两个字段，额外字段不可忽略。
+  // The outermost layer only allows version and requests fields; extra fields cannot be ignored.
   if (!isRecord(value) || value.version !== STATE_VERSION || !Array.isArray(value.requests)) {
     return false;
   }
@@ -650,13 +650,13 @@ function isStoredState(value: unknown): value is StoredState {
   return keys.length === 2 && keys[0] === "requests" && keys[1] === "version";
 }
 function errorCode(error: unknown): string | undefined {
-  // 安全提取 Node 系统错误 code；非 Error 或缺少 code 时返回 undefined。
+  // Safely extract Node system error code; return undefined when not an Error or code is missing.
   if (!(error instanceof Error)) return undefined;
   const code = Reflect.get(error, "code");
   return typeof code === "string" ? code : undefined;
 }
 async function ensureDirectory(path: string, workspace: string, label: string): Promise<void> {
-  // 创建并验证目录不是符号链接且不逃逸 workspace，防止路径遍历把状态写到外部。
+  // Creates and validates directory is not a symlink and does not escape workspace, preventing path traversal from writing state externally.
   try {
     try {
       const info = await lstat(path);
@@ -681,7 +681,7 @@ async function ensureDirectory(path: string, workspace: string, label: string): 
   }
 }
 async function mutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  // 用 Promise 尾队列把同一 key 上的并发操作串行化，进程内多个 store 实例共享这份队列。
+  // Use a Promise tail queue to serialize concurrent operations on the same key; multiple store instances in the process share this queue.
   const previous = tails.get(key) ?? Promise.resolve();
   let unlock!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -698,7 +698,7 @@ async function mutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
   }
 }
 async function atomicReplace(path: string, content: Buffer): Promise<void> {
-  // 先写入同目录临时文件、fsync、rename，读方只能看到完整旧文件或完整新文件。
+  // Writes sibling temporary file first, fsyncs, and renames; readers see only complete old file or complete new file.
   const temp = `${path}.${randomUUID()}.tmp`;
   const handle = await open(temp, "wx");
   try {

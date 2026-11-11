@@ -5,22 +5,22 @@ import { systemMessage } from "../core/messages.js";
 import type { ToolDefinition, ToolResult } from "../core/tools.js";
 import { toolSuccess } from "../core/tools.js";
 
-// 会话级 TODO capability：用完整计划快照对抗长上下文中的任务遗忘。
-// 边界：状态只存在于单次 AgentRunner 生命周期，不做跨会话或磁盘持久化；
-// 提醒只注入下一次模型请求，不写入正式消息历史。
-// 单次计划快照的数量上限，防止模型一次性塞入超大数组。
+// Session-level TODO capability: uses complete plan snapshots to combat task amnesia in long context.
+// Boundary: State exists only in a single AgentRunner lifecycle; no cross-session or disk persistence is performed;
+// Reminders only inject into the next model request and do not write to formal message history.
+// Upper limit on plan snapshot item count to prevent models from inserting oversized arrays at once.
 export const MAX_TODOS = 50;
-// 连续未更新计划的其他工具轮次数，达到后会在下一次模型请求前提醒。
+// Count of consecutive turns of other tools without plan updates; reminds before the next model request once reached.
 export const STALE_TOOL_ROUNDS = 3;
-// 注入的提醒保持固定文案，测试和模型上下文都能观察到同一契约。
+// Injected reminders maintain fixed wording so tests and model contexts observe the same contract.
 export const TODO_STALE_REMINDER =
   "Keep the TODO list current. Call todo_write with the complete task snapshot when the plan changes.";
-// 三个合法状态作为工具 schema 的唯一取值来源。
+// Three valid states serve as the sole source of values for the tool schema.
 export const TODO_STATUSES = Object.freeze(["pending", "in_progress", "completed"] as const);
-// TODO 工具只接受完整快照，防止增量补丁让模型与实际计划状态漂移。
+// TODO tool accepts only complete snapshots to prevent incremental patches from drifting model state from actual plan state.
 export type TodoStatus = (typeof TODO_STATUSES)[number];
 
-// 单项先 trim 再校验，并拒绝未知字段，避免脏数据进入会话计划。
+// Trim and validate each item, rejecting unknown fields to keep dirty data out of the session plan.
 const todoItemSchema = z
   .object({
     content: z
@@ -31,31 +31,31 @@ const todoItemSchema = z
   })
   .strict();
 
-// 工具参数始终是完整快照，不做增量补丁，保持模型看到的计划与内部状态一致。
+// Tool parameters are always complete snapshots without incremental patches, keeping model-seen plans consistent with internal state.
 const todoWriteSchema = z
   .object({
     todos: z.array(todoItemSchema).max(MAX_TODOS),
   })
   .strict();
 
-// 已校验且冻结的计划项，tracker 只保存这种内部安全形态。
+// Validated and frozen plan items; trackers store only this internal safe form.
 export type TodoItem = Readonly<z.output<typeof todoItemSchema>>;
-// 工具 handler 的内部入参；只在 schema 校验成功后才会进入写入路径。
+// Internal input arguments for tool handlers; enters write paths only after successful schema validation.
 type TodoWriteInput = z.output<typeof todoWriteSchema>;
 
-// TodoTracker 是会话级状态：每次构建 Agent 都新建实例，避免跨会话共享计划。
+// TodoTracker is session-level state: build a new instance for each Agent to avoid sharing plans across sessions.
 export class TodoTracker {
-  // 观察每轮工具调用；计划长期未更新时，在下次模型请求前注入提醒。
-  // 当前完整计划快照；替换而非原地修改，使工具输出与内存状态一一对应。
+  // Observe tool calls in each turn; inject reminders before the next model request when plans are unupdated for long periods.
+  // Current full plan snapshot; replace rather than modify in-place to map tool output one-to-one with memory state.
   #todos: readonly TodoItem[] = Object.freeze([]);
-  // 自上次写计划以来发生的非 TODO 工具轮数，不统计没有工具调用的模型回复。
+  // Non-TODO tool turns since last plan write; does not count model replies without tool calls.
   #nonTodoToolRounds = 0;
-  // 暴露给 ToolRegistry 的唯一写入口，handler 闭包保证不会写入其他 tracker 实例。
+  // The sole write entry point exposed to ToolRegistry; handler closures guarantee no writes to other tracker instances.
   readonly toolDefinition: ToolDefinition<TodoWriteInput>;
 
-  // 每个 AgentRunner 独立构造 tracker，避免不同用户或工作区共享任务计划。
+  // Each AgentRunner constructs an independent tracker to prevent different users or workspaces from sharing task plans.
   constructor() {
-    // toolDefinition 与当前 tracker 绑定，作为工具和观察器共享同一份会话状态。
+    // toolDefinition binds to the current tracker, sharing the same session state between tools and observers.
     this.toolDefinition = Object.freeze({
       name: "todo_write",
       description: "Replace the current TODO list with a complete task snapshot.",
@@ -66,12 +66,12 @@ export class TodoTracker {
   }
 
   get todos(): readonly TodoItem[] {
-    // 只读暴露当前快照，供测试和上层检查，不开放外部修改入口。
+    // Expose the current snapshot as read-only for testing and higher-level inspection, without external mutation access.
     return this.#todos;
   }
 
   recordToolRound(toolNames: readonly string[]): void {
-    // 一轮中出现 todo_write 即视为新快照，重置陈旧计数器。
+    // A todo_write in a turn counts as a new snapshot and resets the staleness counter.
     if (toolNames.length === 0) {
       return;
     }
@@ -82,19 +82,19 @@ export class TodoTracker {
     this.#nonTodoToolRounds += 1;
   }
 
-  // 达到陈旧阈值时仅为下一次请求生成临时系统消息，不污染可回放的历史。
+  // When reaching the staleness threshold, generate temporary system messages only for the next request; do not pollute replayable history.
   beforeModel(): readonly ChatMessage[] {
     if (this.#nonTodoToolRounds < STALE_TOOL_ROUNDS) {
       return [];
     }
-    // 提醒是请求级上下文；立即清零可避免后续每轮重复注入。
+    // Reminders are request-level context. Clearing them immediately avoids repeated injection in subsequent turns.
     this.#nonTodoToolRounds = 0;
     return Object.freeze([systemMessage(TODO_STALE_REMINDER)]);
   }
 
-  // 成功后原子替换全部计划并重置计数；不会接受部分更新或保留过期项。
+  // Atomically replace all plans and reset counters on success; rejects partial updates and stale items.
   #writeTodos(input: TodoWriteInput): ToolResult {
-    // 先由 Zod 完整校验，再一次替换快照；失败路径不会触碰旧状态。
+    // Validates completely with Zod first, then replaces snapshot in one step; failure paths do not touch old state.
     this.#todos = Object.freeze(
       input.todos.map((item) => Object.freeze({ content: item.content, status: item.status })),
     );
@@ -103,15 +103,15 @@ export class TodoTracker {
   }
 }
 
-// 将快照序列化为 ASCII JSON，保证工具结果可安全嵌入模型上下文而不依赖终端编码。
+// Serialize snapshots as ASCII JSON to ensure tool results embed safely into model contexts without relying on terminal encodings.
 function serializeSnapshot(todos: readonly TodoItem[]): string {
-  // 使用确定性 JSON 作为模型可见状态，方便下一轮完整替换。
+  // Uses deterministic JSON as model-visible state for convenient complete replacement in the next turn.
   const json = JSON.stringify({
     todos: todos.map((item) => ({ content: item.content, status: item.status })),
   });
   const ascii: string[] = [];
 
-  // 非 BMP 字符拆成 UTF-16 代理对，保持 JSON 的 Unicode 转义合法。
+  // Splits non-BMP characters into UTF-16 surrogate pairs, keeping JSON Unicode escapes valid.
   for (const character of json) {
     const codePoint = character.codePointAt(0);
     if (codePoint === undefined) {

@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集和权限策略。
+// Composition root: selects infrastructure, tool sets, and permission policies by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -11,30 +11,30 @@ import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 import { createChapterOneTools, createChapterTwoTools } from "./features/builtin-tools.js";
 
-// 第 3 章把权限策略接入既有循环，写操作和 Shell 执行均经过审批。
+// Chapter 3 connects permission policies to the existing loop; write operations and Shell executions both require approval.
 const SYSTEM_PROMPT =
   "You are a coding agent. Use tools when needed, inspect their results, and answer accurately.";
 
 export interface BuildDependencies {
-  // 外部边界均可注入，离线测试无需启动真实进程或网络客户端。
+  // All external boundaries are injectable; offline tests do not need to start real processes or network clients.
   readonly model: ModelClient;
-  // 命令和文件工具共享的工作区根。
+  // Workspace root shared by command and file tools.
   readonly workspace: string;
-  // 可替换命令执行边界。
+  // Replaceable command execution boundary.
   readonly commandRunner?: CommandRunner;
-  // 可替换文件系统边界，同时用于写路径安全校验。
+  // Replaceable file system boundary, also used for write path safety validation.
   readonly fileSystem?: WorkspaceFileSystem;
-  // P03 及以后必需的 ask 决策收敛边界。
+  // Required ask decision convergence boundary for P03 and later.
   readonly approvalProvider?: ApprovalProvider;
-  // P03 及以后必需的最终决策审计边界。
+  // Required final decision audit boundary for P03 and later.
   readonly auditSink?: AuditSink;
-  // 可选模型回合上限。
+  // Optional model turn limit.
   readonly maxTurns?: number;
 }
 
-// 根据固定章节 profile 组合累计工具与权限策略，拒绝同号伪造 profile。
+// Combine cumulative tools and permission policies by fixed chapter profiles, rejecting forged profiles with identical names.
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 禁止调用方伪造同章节号但能力不同的 profile，保持教学快照固定。
+  // Callers cannot forge profiles with identical chapter numbers but different capabilities, keeping tutorial snapshots fixed.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -57,13 +57,13 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   });
 }
 
-// 为具 policy 能力的章节构造完整策略；旧 profile 保持与前章一致的直接执行路径。
+// Builds full policy for chapters with policy capabilities; legacy profiles preserve the direct execution path of previous chapters.
 function permissionPolicyForProfile(
   profile: ChapterProfile,
   fileSystem: WorkspaceFileSystem,
   dependencies: BuildDependencies,
 ): PermissionPolicy | undefined {
-  // P03 起审批与审计是必需依赖；更早 profile 保持原有无策略运行方式。
+  // Approval and audit are required dependencies from P03 onward; earlier profiles maintain policy-free execution.
   if (!profile.capabilities.has("policy")) {
     return dependencies.approvalProvider === undefined
       ? undefined
@@ -82,7 +82,7 @@ function permissionPolicyForProfile(
         behavior: "ask",
         reason: "File writes require explicit approval from chapter 3 onward",
         matches: (request) => {
-          // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+          // Promote only write tools; default policy rules handle Shell execution approval.
           const name = request.prepared.definition?.name;
           return name === "write_file" || name === "edit_file";
         },

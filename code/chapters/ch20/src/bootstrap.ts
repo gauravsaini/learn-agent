@@ -1,4 +1,4 @@
-// 组合根：按章节 profile 选择能力并组装工具、权限、Hook、后台/Cron/队友/协议与 MCP 运行时；P20 以完整 Harness 统一资源边界。
+// Composition root: selects capabilities by chapter profile and assembles tools, permissions, Hooks, background/Cron/teammate/protocol, and MCP runtimes; P20 unifies resource boundaries with a full Harness.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -52,7 +52,7 @@ const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// Full Harness 在唯一组装根验证各运行时共享的存储、事件流与关闭责任。
+// Full Harness validates shared storage, event streams, and shutdown responsibilities across runtimes at the single composition root.
 export interface BuildDependencies {
   readonly model: ModelClient;
   readonly workspace: string;
@@ -67,7 +67,7 @@ export interface BuildDependencies {
   readonly taskStore?: TaskStore;
   readonly workStealingRuntime?: WorkStealingRuntime;
   readonly worktreeRuntime?: WorktreeRuntime;
-  // MCP runtime 由组合根注入；连接与动态工具发布都归入 Runner 的资源生命周期。
+  // MCP runtime is injected by composition root; connections and dynamic tool publishing belong to Runner resource lifecycles.
   readonly mcpRuntime?: McpRuntime;
   readonly backgroundSupervisor?: JobSupervisor;
   readonly cronRuntime?: CronRuntime;
@@ -75,11 +75,11 @@ export interface BuildDependencies {
   readonly protocolRuntime?: ProtocolRuntime;
 }
 
-// P20 把运行时状态渲染成动态 Prompt 的最后一段 runtime_status。
-// 这里只汇总可同步读取的事实：后台是否仍有工作、MCP 当前连接哪些 alias。
-// 状态栏不替代 EventInbox：事件仍在请求前消费，状态只帮助模型判断下一轮是否等待。
+// P20 renders runtime state as runtime_status, the final section of the dynamic Prompt.
+// Only synchronously readable facts are summarized here: Whether background work remains, and which aliases MCP currently connects to.
+// The status bar does not replace EventInbox: events are still consumed before requests, and status only helps the model decide whether to wait in the next turn.
 function fullHarnessRuntimeStatus(dependencies: BuildDependencies): JsonObject {
-  // statusProvider 只读取当前快照，不触发连接、任务或事件副作用；动态 Prompt 的职责是观察而非调度。
+  // statusProvider only reads current snapshots without triggering connection, task, or event side effects; dynamic Prompts observe rather than schedule.
   const pendingWork =
     dependencies.backgroundSupervisor?.hasPendingWork === true ||
     dependencies.cronRuntime?.hasPendingWork === true ||
@@ -92,10 +92,10 @@ function fullHarnessRuntimeStatus(dependencies: BuildDependencies): JsonObject {
   });
 }
 
-// 按固定 profile 组合累计能力，避免任意依赖组合绕过章节契约。
+// Accumulate capabilities by fixed profile to prevent arbitrary dependency combinations from bypassing chapter contracts.
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // Full Harness 的构造顺序固定为“先验证依赖，再注册工具，最后交给 Runner 托管资源”；
-  // 这样任何失败都发生在明确的组合边界内，不会留下半装配的 Agent。
+  // Construction order of Full Harness is fixed: "validate dependencies first, register tools next, then delegate resources to Runner";
+  // This ensures any failure happens within a clear composition boundary without leaving a half-assembled Agent.
   validateBuildDependencies(profile, dependencies);
   const commandRunner =
     dependencies.commandRunner === undefined ? new PowerShellRunner() : dependencies.commandRunner;
@@ -182,7 +182,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     registerTaskTools(tools, dependencies.taskStore);
   }
   if (dependencies.workStealingRuntime !== undefined) {
-    // Lead 注册全部任务工具；Teammate 在 factory 内注册无 create_task 的版本。
+    // Lead registers all task tools; Teammate registers the version without create_task inside factory.
     registerLeasedTaskTools(
       tools,
       dependencies.workStealingRuntime.store,
@@ -190,7 +190,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     );
   }
   if (dependencies.backgroundSupervisor !== undefined) {
-    // 主 Agent 注册后台查询与取消工具；子 Agent 不接收后台 Supervisor，因此不暴露这些能力。
+    // Primary Agent registers background query and cancellation tools; subagents receive no background Supervisor, so do not expose these capabilities.
     registerBackgroundJobTools(tools, dependencies.backgroundSupervisor);
   }
   if (dependencies.worktreeRuntime !== undefined) {
@@ -203,12 +203,12 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     tools.register(dependencies.teammateRuntime.spawnToolDefinition);
     tools.register(dependencies.teammateRuntime.sendToolDefinition);
     if (dependencies.protocolRuntime !== undefined) {
-      // Lead 获得 request_shutdown/review_plan；submit_plan 只注册给队友 factory。
+      // Lead receives request_shutdown/review_plan; submit_plan registers only to teammate factory.
       const [requestShutdownTool, reviewPlanTool] =
         dependencies.protocolRuntime.leadToolDefinitions;
       tools.register(requestShutdownTool);
       tools.register(reviewPlanTool);
-      // configureProtocol 校验共享依赖，确保协议消息能路由回同一个 MailboxStore。
+      // configureProtocol validates shared dependencies to ensure protocol messages route back to the same MailboxStore.
       dependencies.teammateRuntime.configureProtocol(dependencies.protocolRuntime);
     }
     if (dependencies.workStealingRuntime !== undefined) {
@@ -216,14 +216,14 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     }
     const teammateRuntime = dependencies.teammateRuntime;
     teammateRuntime.configureRunnerFactory((name, role, sendDefinition) => {
-      // 持续 Teammate 只获得受限文件/消息工具与协议/任务工具，不暴露 create_task。
+      // Persistent Teammates receive restricted file/message tools and protocol/task tools only, without exposing create_task.
       const teammateTools = standardTools.tools.subset(["shell", "read_file", "write_file"]);
       teammateTools.register(sendDefinition);
       if (dependencies.protocolRuntime !== undefined) {
         teammateTools.register(dependencies.protocolRuntime.submitPlanToolDefinition);
       }
       if (dependencies.workStealingRuntime !== undefined) {
-        // 队友任务工具使用 worker 专用注册入口，与 Lead 的 create_task 边界保持分离。
+        // Teammate task tools use a worker-specific registration entry point, staying separated from the Lead create_task boundary.
         registerTeammateLeasedTaskTools(
           teammateTools,
           dependencies.workStealingRuntime.store,
@@ -264,7 +264,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     });
   }
   if (dependencies.mcpRuntime !== undefined) {
-    // 管理工具只进入 Lead registry；远程工具在 connect 成功后由 runtime 动态发布。
+    // Management tools only enter the Lead registry; remote tools are published dynamically by runtime after successful connect.
     dependencies.mcpRuntime.install(tools);
   }
   const toolDispatcher: ToolDispatcher | undefined =
@@ -286,8 +286,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
         context: Object.freeze({ chapter: profile.chapter, identity }),
         ...(profile.capabilities.has("full_harness")
           ? {
-              // P20 的状态段参与 DynamicPromptRenderer 缓存键，因此连接或待处理工作变化会让下一次请求重渲染。
-              // P20 使用 statusProvider，让 MCP 连接与后台状态在当前请求重新读取，并保持在提示尾部。
+              // State sections of P20 participate in DynamicPromptRenderer cache keys, so changes in connections or pending work trigger re-rendering on the next request.
+              // P20 uses statusProvider so MCP connections and background states re-read on the current request and stay at prompt end.
               statusProvider: () => fullHarnessRuntimeStatus(dependencies),
             }
           : {}),
@@ -297,8 +297,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     : undefined;
   const eventPump =
     dependencies.teammateRuntime ?? dependencies.cronRuntime ?? dependencies.backgroundSupervisor;
-  // 事件泵按队友 > cron > 后台的优先级选择，保证同一轮只有一个消费者。
-  // Full Harness 把所有异步运行时交给 AgentRunner 统一管理，关闭时按注册顺序逆序释放。
+  // Event pump prioritizes teammate > cron > background to ensure only one consumer per turn.
+  // Full Harness delegates all asynchronous runtimes to AgentRunner for unified management, releasing in reverse registration order on shutdown.
   const resources: readonly AsyncResource[] = Object.freeze([
     ...(dependencies.backgroundSupervisor === undefined ? [] : [dependencies.backgroundSupervisor]),
     ...(dependencies.cronRuntime === undefined ? [] : [dependencies.cronRuntime]),
@@ -334,10 +334,10 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   });
 }
 
-// 组装前的统一契约校验：能力声明和运行时依赖必须精确匹配，避免漏配或混用。
+// Unified contract validation before assembly: capability declarations and runtime dependencies must match exactly to avoid omissions or mixing.
 function validateBuildDependencies(profile: ChapterProfile, dependencies: BuildDependencies): void {
-  // 这里的引用身份检查是 Full Harness 的装配门禁：同一 store、EventInbox、Cron、队友和 MCP 资源
-  // 必须由同一组合根创建，避免“功能都存在但各自持有状态”的假完整实现。
+  // Reference identity checks here are assembly gates for Full Harness: Same store, EventInbox, Cron, teammates, and MCP resources
+  // Must be created by the same composition root, avoiding pseudo-complete implementations where "all features exist but each holds isolated state".
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -445,12 +445,12 @@ function validateBuildDependencies(profile: ChapterProfile, dependencies: BuildD
   }
 }
 
-// JSON 任务存储只在 SQLite DAG 出现前启用；SQLite 章节之后必须用新的 store 契约。
+// JSON task store is active only before SQLite DAG appears; later chapters must use the new SQLite store contract.
 function usesJsonTaskStore(profile: ChapterProfile): boolean {
   return profile.capabilities.has("task_dag_json") && !profile.capabilities.has("task_dag_sqlite");
 }
 
-// 记忆会话绑定模型查询器与持久化 store，并决定是否把记忆作为系统提示静态注入。
+// The memory session binds model query engines and persistent stores, deciding whether to inject memories statically into system prompt.
 function createMemorySession(
   dependencies: BuildDependencies,
   emitContextMessages: boolean,
@@ -465,7 +465,7 @@ function createMemorySession(
   });
 }
 
-// 标准工具与可选 TODO 观察器一起返回，组合根负责后续扩展注册。
+// Return standard tools together with optional TODO observers; composition root handles subsequent extension registration.
 interface StandardTools {
   readonly tools: ToolRegistry;
   readonly todoTracker?: TodoTracker;
@@ -489,7 +489,7 @@ function createStandardTools(
   return Object.freeze({ tools, todoTracker });
 }
 
-// 权限策略只基于工具 effect/name 与工作区写边界声明规则，审批与审计由 CLI/测试注入。
+// Permission policy declares rules only from tool effect/name and workspace write boundaries; CLI or tests inject approval and audit.
 function permissionPolicyForProfile(
   profile: ChapterProfile,
   fileSystem: WorkspaceFileSystem,

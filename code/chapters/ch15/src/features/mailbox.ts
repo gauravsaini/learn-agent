@@ -1,4 +1,4 @@
-// mailbox 领域模型：定义持久消息、状态目录与 Store 协议，供 teammate 运行时和文件适配器共用。
+// Mailbox domain model: defines persistent messages, state directories, and Store protocols shared by teammate runtime and file adapters.
 import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
@@ -7,7 +7,7 @@ import type { RuntimeEvent } from "../core/events.js";
 import { isWindowsReservedComponent } from "../core/filesystem.js";
 
 export const MailboxMessageKind = Object.freeze({
-  // 消息类型决定消费者如何解释 content，但不能改变 mailbox 的持久化协议。
+  // The message type determines how consumers interpret content, but cannot change the mailbox persistence protocol.
   Task: "task",
   Message: "message",
   Result: "result",
@@ -15,7 +15,7 @@ export const MailboxMessageKind = Object.freeze({
 export type MailboxMessageKind = (typeof MailboxMessageKind)[keyof typeof MailboxMessageKind];
 
 export const MailboxState = Object.freeze({
-  // 每个目录名对应一个持久状态；同一条消息只允许在 ready/processing/done/quarantine 之一。
+  // Each directory name corresponds to a persistent state; a message is allowed only in ready, processing, done, or quarantine.
   Ready: "ready",
   Processing: "processing",
   Done: "done",
@@ -24,7 +24,7 @@ export const MailboxState = Object.freeze({
 export type MailboxState = (typeof MailboxState)[keyof typeof MailboxState];
 
 export class MailboxError extends Error {
-  // 协议或持久化错误携带稳定 errorCode，工具边界可把它转成结构化 ToolResult。
+  // Protocol or persistence errors carry a stable errorCode so the tool boundary can convert them to structured ToolResult.
   readonly errorCode: string;
 
   constructor(errorCode: string, message: string, options?: ErrorOptions) {
@@ -35,7 +35,7 @@ export class MailboxError extends Error {
 }
 
 export class MailboxStorageError extends MailboxError {
-  // 文件损坏、锁失败和状态迁移冲突统一映射到同一错误族，调用方无需猜测底层异常。
+  // Map file corruption, lock failures, and state transition conflicts to the same error family. Callers do not need to guess underlying exceptions.
   constructor(message: string, options?: ErrorOptions) {
     super("mailbox_storage_error", message, options);
     this.name = "MailboxStorageError";
@@ -43,40 +43,40 @@ export class MailboxStorageError extends MailboxError {
 }
 
 export interface MailboxMessage extends RuntimeEvent {
-  // 邮箱消息以稳定 id、发送者和接收者建模，持久层据此保证投递与确认可追踪。
+  // Mailbox messages are modeled with stable ID, sender, and recipient; the persistence layer guarantees delivery and acknowledgment are traceable.
   readonly id: string;
-  // 发送方和接收方均为可安全用作目录名的规范 Agent slug。
+  // Sender and recipient are canonical Agent slugs safe to use as directory names.
   readonly sender: string;
   readonly recipient: string;
-  // task/message/result 只影响消费者语义，不改变投递状态机。
+  // task/message/result affects consumer semantics only without altering the delivery state machine.
   readonly kind: MailboxMessageKind;
-  // 交给目标 Agent 的原始文本负载。
+  // Raw text payload passed to the target Agent.
   readonly content: string;
-  // 决定同一收件箱内稳定 FIFO 次序的 UTC 时间。
+  // UTC time that determines stable FIFO order within the same inbox.
   readonly createdAtUtc: Date;
-  // RuntimeEvent 的去重 id 与消息主键一致。
+  // Deduplication id of RuntimeEvent matches message primary key.
   readonly eventId: string;
-  // 工具副作用幂等键与消息 UUID 一致，重试不会生成新身份。
+  // Tool side-effect idempotent keys match message UUIDs; retries do not generate new identities.
   readonly idempotencyKey: string;
 }
 
 export interface MailboxStore {
-  // Store 暴露发送、认领和确认的协议操作，具体文件持久化留在适配器。
+  // Store exposes protocol operations for send, claim, and ack; concrete file persistence remains in adapters.
   send(
     sender: string,
     recipient: string,
     content: string,
     kind: MailboxMessageKind,
   ): Promise<MailboxMessage>;
-  // 原子认领最早 ready 消息并迁移为 processing；空邮箱返回 undefined。
+  // Atomically claim the earliest ready message and move it to processing; return undefined when the mailbox is empty.
   claim(recipient: string): Promise<MailboxMessage | undefined>;
-  // processing -> done；相同完成记录允许幂等确认。
+  // processing -> done; identical completion records allow idempotent confirmation.
   ack(message: MailboxMessage): Promise<boolean>;
-  // processing -> ready，用于取消、关闭或可重试失败。
+  // processing -> ready, used for cancellation, shutdown, or retriable failures.
   release(message: MailboxMessage): Promise<boolean>;
-  // processing -> quarantine，用于不可自动重试的业务失败。
+  // processing -> quarantine, used for non-retriable business failures.
   quarantine(message: MailboxMessage): Promise<boolean>;
-  // 进程恢复时把遗留 processing 租约退回 ready，并返回恢复数量。
+  // Process recovery rolls back leftover processing leases to ready, and returns the recovered count.
   recoverProcessing(recipient: string): Promise<number>;
 }
 
@@ -90,7 +90,7 @@ export const spawnTeammateInputSchema = z
     prompt: z.string(),
   })
   .strict();
-// spawn_teammate 的严格工具输入，不允许模型指定 sender 或运行时身份。
+// Strict tool input for spawn_teammate; does not allow the model to specify sender or runtime identity.
 export type SpawnTeammateInput = z.infer<typeof spawnTeammateInputSchema>;
 
 export const sendMessageInputSchema = z
@@ -99,11 +99,11 @@ export const sendMessageInputSchema = z
     content: z.string(),
   })
   .strict();
-// send_message 的严格工具输入；sender 始终来自 ToolContext.identity。
+// Strict tool input for send_message; sender always comes from ToolContext.identity.
 export type SendMessageInput = z.infer<typeof sendMessageInputSchema>;
 
 export function canonicalAgentName(value: string): string {
-  // Agent 名会被用作文件目录名，因此同时校验 slug 规则和 Windows 保留组件。
+  // The Agent name is used as a directory name, so it validates both slug rules and Windows reserved components.
   if (typeof value !== "string" || !AGENT_NAME.test(value) || isWindowsReservedComponent(value)) {
     throw new Error("Invalid or unsafe Agent name; expected a safe lowercase slug");
   }
@@ -111,7 +111,7 @@ export function canonicalAgentName(value: string): string {
 }
 
 export function canonicalMailboxMessageId(value: string): string {
-  // UUID 既是消息主键也是事件 idempotency key，必须使用规范格式。
+  // The UUID is both the message primary key and the event idempotency key: it must use canonical format.
   if (typeof value !== "string" || !CANONICAL_UUID.test(value)) {
     throw new Error("Mailbox message id must be a canonical UUID");
   }
@@ -126,7 +126,7 @@ export function createMailboxMessage(input: {
   content: string;
   createdAtUtc: Date;
 }): MailboxMessage {
-  // 构造边界统一校验 id、sender、recipient、kind、content 和时钟，返回不可变消息。
+  // Validate id, sender, recipient, kind, content, and clock at the construction boundary, returning immutable messages.
   const id = canonicalMailboxMessageId(input.id);
   const sender = canonicalAgentName(input.sender);
   const recipient = canonicalAgentName(input.recipient);
@@ -154,7 +154,7 @@ export function createMailboxMessage(input: {
 }
 
 export function mailboxMessageFromJson(value: unknown): MailboxMessage {
-  // 磁盘 JSON 是外部输入，必须拒绝未知字段和非法值，避免坏消息污染运行态。
+  // On-disk JSON is external input and must reject unknown fields and invalid values to prevent bad messages from corrupting runtime state.
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new MailboxStorageError("Mailbox message payload is invalid");
   }
@@ -200,7 +200,7 @@ export function mailboxMessageFromJson(value: unknown): MailboxMessage {
 }
 
 export function mailboxMessageToJson(message: MailboxMessage): Readonly<Record<string, string>> {
-  // 持久化使用 snake_case 的稳定字段名，内存对象保持 camelCase，转换只在边界发生。
+  // Persistence uses stable snake_case field names while in-memory objects keep camelCase; conversions occur at boundaries only.
   return Object.freeze({
     id: message.id,
     sender: message.sender,
@@ -212,7 +212,7 @@ export function mailboxMessageToJson(message: MailboxMessage): Readonly<Record<s
 }
 
 export function equalMailboxMessages(left: MailboxMessage, right: MailboxMessage): boolean {
-  // 幂等 ack 需要按完整消息内容比较，不能只比较 id，否则可能确认了错误的负载。
+  // Idempotent ack requires comparing full message content rather than just ids; otherwise it might confirm the wrong payload.
   return (
     left.id === right.id &&
     left.sender === right.sender &&
@@ -224,12 +224,12 @@ export function equalMailboxMessages(left: MailboxMessage, right: MailboxMessage
 }
 
 export function randomMailboxMessageId(): string {
-  // 默认 id 生成器只在生产构造时使用；测试可注入确定 UUID。
+  // Default ID generator is used only during production construction; tests can inject deterministic UUIDs.
   return randomUUID();
 }
 
 function mailboxPayload(this: MailboxMessage): Readonly<Record<string, unknown>> {
-  // RuntimeEvent 的 payload 暴露结构化字段，避免调用方通过字符串前缀判断消息类型。
+  // RuntimeEvent payload exposes structured fields to prevent callers from determining message types by string prefixes.
   return Object.freeze({
     kind: "mailbox",
     message_id: this.id,

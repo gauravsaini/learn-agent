@@ -1,4 +1,4 @@
-// 第 12 章任务 DAG 的领域模型与工具注册：Task 构造器、TaskStore 接口和五个任务工具共用同一套校验边界。
+// Chapter 12 task DAG domain model and tool registration: Task constructor, TaskStore interface, and five task tools share the same validation boundary.
 import { z } from "zod";
 
 import type { ToolDefinition, ToolRegistry } from "../core/tools.js";
@@ -12,8 +12,8 @@ export const TaskStatus = Object.freeze({
   COMPLETED: "completed",
 } as const);
 
-// 状态集合是任务迁移的单一来源；pending/in_progress/completed 之外的状态不会进入模型。
-// “blocked” 不单独落盘，而是由依赖图在 claim 时派生，避免完成上游时批量改写下游文件。
+// The state set is the single source of truth for task transitions; states other than pending, in_progress, and completed do not enter the model.
+// "blocked" does not persist separately; the dependency graph derives it at claim time to avoid rewriting downstream files when upstream tasks finish.
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 
 export interface TaskOptions {
@@ -26,7 +26,7 @@ export interface TaskOptions {
 }
 
 export class Task {
-  // Task 构造器集中维护状态、owner 与依赖的领域不变量，存储层不得绕过它。
+  // Task constructor centrally maintains domain invariants for status, owner, and dependencies; storage layers must not bypass it.
   readonly id: string;
   readonly subject: string;
   readonly description: string;
@@ -60,7 +60,7 @@ export interface TaskCompletion {
   readonly unblocked: readonly Task[];
 }
 
-// 领域错误统一携带稳定 code；工具层据此返回可区分的错误码，而不是全部折叠成通用失败。
+// Domain errors uniformly carry stable code; tool layer returns distinguishable error codes accordingly instead of collapsing all into generic failures.
 export class TaskError extends Error {
   readonly code: string;
 
@@ -124,9 +124,9 @@ export interface CreateTaskInput {
   readonly blockedBy?: readonly string[];
 }
 
-// TaskStore 是所有持久化实现必须满足的窄接口，工具层不依赖 JSON 或 SQLite 具体实现。
+// TaskStore is the narrow interface all persistent implementations must satisfy; tool layer does not depend on concrete JSON or SQLite implementations.
 export interface TaskStore {
-  // 任务图操作以完整 Task 返回，调用者不能通过局部补丁跳过状态迁移校验。
+  // Task graph operations return complete Task; callers cannot bypass state transition checks via partial patches.
   createTask(input: CreateTaskInput): Promise<Task>;
   getTask(taskId: string): Promise<Task>;
   listTasks(): Promise<readonly Task[]>;
@@ -134,7 +134,7 @@ export interface TaskStore {
   completeTask(taskId: string, owner: string): Promise<TaskCompletion>;
 }
 
-// 所有工具 schema 都使用 .strict()，额外字段（例如伪造 owner）会在任何副作用前被拒绝。
+// All tool schemas use .strict(); extra fields (such as forged owners) are rejected before any side effects.
 const taskIdSchema = z.string().regex(CANONICAL_UUID, "task_id must be a canonical UUID");
 const createTaskSchema = z
   .object({
@@ -146,9 +146,9 @@ const createTaskSchema = z
 const taskIdInputSchema = z.object({ task_id: taskIdSchema }).strict();
 const listTasksInputSchema = z.object({}).strict();
 
-// 工具参数沿用磁盘命名 blocked_by，避免模型可见字段与存储格式之间出现另一层映射。
+// Tool parameters follow on-disk naming blocked_by, avoiding another mapping layer between model-visible fields and storage formats.
 export function registerTaskTools(registry: ToolRegistry, store: TaskStore): void {
-  // 五个工具统一由这里注册，schema 与 handler 都来自同一 ToolDefinition。
+  // Five tools are registered centrally here; schema and handler both come from the same ToolDefinition.
   registry.register(createTaskDefinition(store));
   registry.register(
     taskIdDefinition(
@@ -166,7 +166,7 @@ export function registerTaskTools(registry: ToolRegistry, store: TaskStore): voi
     effect: "read",
     handler: async (_input, _context) => {
       try {
-        // 返回完整图快照而不是局部任务，调用方才能根据依赖和 ready 状态做规划。
+        // Returns a full graph snapshot instead of local tasks so callers can plan based on dependencies and ready states.
         const tasks = await store.listTasks();
         return toolSuccess(encodePayload({ tasks: tasks.map(taskPayload) }));
       } catch (error) {
@@ -190,7 +190,7 @@ export function registerTaskTools(registry: ToolRegistry, store: TaskStore): voi
     effect: "write",
     handler: async (input, context) => {
       try {
-        // 完成者只能来自可信的 ToolContext.identity，模型不能选择替谁完成任务。
+        // Completers can only come from trusted ToolContext.identity; the model cannot choose on whose behalf to complete tasks.
         const completion = await store.completeTask(
           input.task_id,
           normalizeOwner(context.identity),
@@ -217,7 +217,7 @@ function createTaskDefinition(store: TaskStore): ToolDefinition<z.infer<typeof c
     effect: "write",
     handler: async (input) => {
       try {
-        // handler 只做输入到 TaskStore 的转发；全图校验与原子写入由持久化边界负责。
+        // handler only forwards input to TaskStore; the persistence boundary handles full graph validation and atomic writes.
         const task = await store.createTask({
           subject: input.subject,
           description: input.description,
@@ -237,7 +237,7 @@ function taskIdDefinition(
   effect: "read" | "write",
   store: TaskStore,
 ): ToolDefinition<z.infer<typeof taskIdInputSchema>> {
-  // get/claim 共用 task_id schema；claim 的 owner 只来自 ToolContext.identity，不接受模型参数。
+  // get/claim share the task_id schema; claim owner comes only from ToolContext.identity and rejects model arguments.
   return {
     name,
     description,
@@ -258,7 +258,7 @@ function taskIdDefinition(
 }
 
 function taskToolError(error: unknown) {
-  // 已知领域错误保留稳定错误码；未知异常继续向上抛，避免吞掉程序缺陷。
+  // Known domain errors retain stable error codes; throw unknown exceptions upward to avoid swallowing bugs.
   if (error instanceof TaskError) {
     return toolError(error.code, error.message);
   }
@@ -266,7 +266,7 @@ function taskToolError(error: unknown) {
 }
 
 export function canonicalTaskId(value: string): string {
-  // 所有 ID 都先归一为 canonical UUID，外部路径字符串无法进入文件系统。
+  // Normalize all IDs to canonical UUIDs first; external path strings cannot enter the filesystem.
   if (typeof value !== "string" || !CANONICAL_UUID.test(value)) {
     throw new TaskGraphError("task id must be a canonical UUID");
   }
@@ -277,7 +277,7 @@ export function normalizeOwner(value: string): string {
   if (typeof value !== "string") {
     throw new TaskOwnershipError("task owner must be a string");
   }
-  // 先 trim 再判空，避免带首尾空格的字符串被当成两个不同的 owner。
+  // Trims before checking emptiness to prevent strings with leading/trailing spaces from counting as different owners.
   const normalized = value.trim();
   if (normalized.length === 0) {
     throw new TaskOwnershipError("task owner must not be empty");
@@ -311,7 +311,7 @@ function normalizeDependencies(values: readonly string[]): readonly string[] {
   if (!Array.isArray(values)) {
     throw new TaskStorageError("task dependencies must be an array");
   }
-  // 依赖先归一化为 canonical UUID，再检查重复引用；重复依赖会在写入前明确失败。
+  // Dependencies normalize to canonical UUIDs before checking duplicate references; duplicate dependencies fail explicitly before writing.
   const normalized = values.map(canonicalTaskId);
   if (new Set(normalized).size !== normalized.length) {
     throw new TaskGraphError("task dependencies must be unique");
@@ -320,7 +320,7 @@ function normalizeDependencies(values: readonly string[]): readonly string[] {
 }
 
 function isTaskStatus(value: unknown): value is TaskStatus {
-  // 未知字符串不能进入领域对象；三态之外的任何值都按存储错误处理。
+  // Unknown strings cannot enter domain objects; treat any value outside the three states as a storage error.
   return (
     value === TaskStatus.PENDING ||
     value === TaskStatus.IN_PROGRESS ||
@@ -329,7 +329,7 @@ function isTaskStatus(value: unknown): value is TaskStatus {
 }
 
 function taskPayload(task: Task): Readonly<Record<string, unknown>> {
-  // 返回给模型的字段使用磁盘命名 blocked_by，避免 wire format 与存储格式不一致。
+  // Fields returned to the model use the disk name blocked_by to avoid inconsistency between wire format and storage format.
   return {
     blocked_by: [...task.blockedBy],
     description: task.description,

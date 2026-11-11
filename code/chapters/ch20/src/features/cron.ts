@@ -1,4 +1,4 @@
-// Cron 运行时：以持久化五字段计划为输入，经 CronStore 排程、EventInbox 发布事件，并由 Supervisor 托管轮询 worker。
+// Cron runtime: takes persistent five-field schedule as input, schedules via CronStore, publishes events via EventInbox, and manages polling worker via Supervisor.
 import { randomUUID } from "node:crypto";
 
 import { CronExpressionParser } from "cron-parser";
@@ -9,9 +9,9 @@ import type { ToolContext, ToolDefinition, ToolResult } from "../core/tools.js";
 import { toolError, toolSuccess } from "../core/tools.js";
 import type { JobSupervisor } from "./background.js";
 
-// Cron 领域错误基类；errorCode 是工具边界可稳定返回的机器可读分类。
+// Base class for Cron domain errors; errorCode is a machine-readable category stably returned at tool boundaries.
 export class CronError extends Error {
-  // 不暴露底层异常类型，调用方只依赖稳定错误码。
+  // Do not expose underlying exception types; callers rely only on stable error codes.
   readonly errorCode: string;
   constructor(errorCode: string, message: string, options?: ErrorOptions) {
     super(message, options);
@@ -19,25 +19,25 @@ export class CronError extends Error {
     this.errorCode = errorCode;
   }
 }
-// 五字段表达式、时区或时间输入不满足调度契约。
+// Five-field expression, timezone, or time input does not satisfy the scheduling contract.
 export class CronExpressionError extends CronError {
   constructor(message: string) {
     super("cron_expression_error", message);
   }
 }
-// 快照损坏、持久化失败或锁异常统一映射为可预测的 CronStorageError。
+// Snapshot corruption, persistence failures, or lock exceptions map uniformly to predictable CronStorageErrors.
 export class CronStorageError extends CronError {
   constructor(message: string, options?: ErrorOptions) {
     super("cron_storage_error", message, options);
   }
 }
-// 查询或确认引用了不存在的 job/event 时显式失败，不伪装成空结果。
+// Fail explicitly when queries or confirmations reference non-existent jobs or events; do not masquerade as empty results.
 export class CronJobNotFoundError extends CronError {
   constructor(message: string) {
     super("cron_job_not_found", message);
   }
 }
-// 运行时关闭后仍调用 schedule/start/tick 时立即失败，避免关闭边界外继续调度。
+// Calling schedule/start/tick after runtime close fails immediately to prevent continued scheduling outside the close boundary.
 export class CronClosedError extends CronError {
   constructor(message: string) {
     super("cron_closed", message);
@@ -45,43 +45,43 @@ export class CronClosedError extends CronError {
 }
 
 export interface CronJob {
-  // 计划持久化下一触发槽位和上次槽位，避免重启或重复 tick 造成重复执行。
+  // The plan persists next trigger slot and last slot to prevent repeated execution on restart or duplicate ticks.
   readonly id: string;
-  // 归一化后的五字段 Cron 表达式。
+  // Normalized five-field Cron expression.
   readonly cron: string;
-  // 到期事件启动独立 Agent 回合时使用的用户意图。
+  // User intent used when an expiration event starts an independent Agent turn.
   readonly prompt: string;
-  // IANA 时区名；槽位计算以此时区的本地日历为准。
+  // IANA timezone name; slot calculation uses the local calendar of this timezone.
   readonly timezone: string;
-  // false 表示触发一次后删除计划。
+  // false indicates deleting the schedule after triggering once.
   readonly recurring: boolean;
-  // true 表示计划与 outbox 跨进程重启保留。
+  // true indicates schedules and outbox persist across process restarts.
   readonly durable: boolean;
-  // 创建计划的主体；事件回合继承该身份，而不是当前 CLI 用户。
+  // The entity creating the schedule; event turns inherit this identity instead of the current CLI user.
   readonly identity: string;
-  // 下一次允许生成事件的 UTC 瞬时。
+  // UTC instant when event generation is next permitted.
   readonly nextRunAtUtc: Date;
-  // 上一次已生成事件的槽位，用于审计和防重复。
+  // Slot of the previously generated event, used for audit and deduplication.
   readonly lastSlotAtUtc: Date | null;
 }
 
 export interface CronEvent extends RuntimeEvent {
-  // 判别字段让共享 EventInbox 区分 Cron 与后台作业终态。
+  // Discriminator field allows shared EventInbox to distinguish between Cron and background job terminal states.
   readonly kind: "cron";
   readonly eventId: string;
   readonly jobId: string;
-  // 事件携带原计划身份，Loop 用它构造隔离的 ToolContext。
+  // Event carries original plan identity, and Loop uses it to construct an isolated ToolContext.
   readonly identity: string;
   readonly prompt: string;
   readonly timezone: string;
   readonly durable: boolean;
-  // 实际触发的 UTC 槽位，而非 scheduler 扫描时间。
+  // Actual triggered UTC slot, not scheduler scan time.
   readonly slotAtUtc: Date;
 }
 
-// 存储契约隔离“如何持久化”与“何时调度”：runtime 只依赖原子 tick、outbox 和 leader lease。
+// Storage contracts isolate "how to persist" from "when to schedule": runtime depends only on atomic ticks, outboxes, and leader leases.
 export interface CronStore {
-  // 创建计划并计算严格晚于 nowUtc 的首个槽位。
+  // Create a schedule and calculate the first slot strictly after nowUtc.
   scheduleCron(input: {
     cron: string;
     prompt: string;
@@ -91,31 +91,31 @@ export interface CronStore {
     identity: string;
     nowUtc: Date;
   }): Promise<CronJob>;
-  // 合并 durable 与 session-only 状态读取单个计划。
+  // Merge durable and session-only states to read a single schedule.
   getJob(id: string): Promise<CronJob>;
-  // 返回两个生命周期的有序计划快照。
+  // Returns an ordered schedule snapshot of two lifecycles.
   listJobs(): Promise<readonly CronJob[]>;
-  // 原子生成所有已到期事件并推进或删除对应计划。
+  // Atomically generate all expired events and advance or delete corresponding schedules.
   tick(nowUtc: Date, includeDurable?: boolean): Promise<readonly CronEvent[]>;
-  // 读取尚未确认的 outbox，事件在 ack 前可重复被 scheduler 观察到。
+  // Read unacknowledged outbox; events can be repeatedly observed by the scheduler before ack.
   pendingEvents(includeDurable?: boolean): Promise<readonly CronEvent[]>;
-  // 从 session 或 durable outbox 删除已消费事件。
+  // Deletes consumed events from session or durable outbox.
   ackEvent(eventId: string): Promise<boolean>;
-  // 非阻塞争夺 durable scheduler leader；失败实例仍可调度本地 session job。
+  // Non-blocking acquisition of durable scheduler leader; failed instances can still schedule local session jobs.
   tryAcquireLeader(): Promise<boolean>;
-  // 释放当前实例持有的 leader lease。
+  // Releases the leader lease held by the current instance.
   releaseLeader(): Promise<void>;
 }
 
-// 可注入时钟确保测试和排程都使用同一个 UTC 事实源。
+// Injectable clock ensures tests and scheduling share the same UTC source of truth.
 export interface CronClock {
   now(): Date;
 }
-// 可取消睡眠边界；关闭 runtime 时用于立即唤醒轮询 worker。
+// Cancellable sleep boundary; used to wake polling workers immediately when closing runtime.
 export interface CronSleeper {
   sleep(milliseconds: number, signal?: AbortSignal): Promise<void>;
 }
-// schedule_cron 工具可见输入；身份和当前时间只能来自可信运行时上下文。
+// Visible tool inputs for schedule_cron; identity and current time must come only from trusted runtime context.
 export interface ScheduleCronInput {
   readonly cron: string;
   readonly prompt: string;
@@ -124,7 +124,7 @@ export interface ScheduleCronInput {
   readonly durable: boolean;
 }
 
-// 工具输入只允许业务字段；id、identity 和 nextRunAtUtc 由运行时生成或从上下文取得。
+// Tool inputs permit business fields only; id, identity, and nextRunAtUtc are generated by runtime or obtained from context.
 const scheduleCronSchema = z
   .object({
     cron: z.string(),
@@ -136,33 +136,33 @@ const scheduleCronSchema = z
   .strict();
 
 export class CronRuntime {
-  // CronRuntime 通过共享 Supervisor 托管 worker，并以 leader lease 防止多实例重复调度。
+  // CronRuntime manages workers via shared Supervisor and uses a leader lease to prevent duplicate scheduling across instances.
   readonly #store: CronStore;
   readonly #inbox: EventInbox;
   readonly #supervisor: JobSupervisor;
   readonly #clock: CronClock;
   readonly #sleeper: CronSleeper;
   readonly #pollMilliseconds: number;
-  // 构造期固定的工具定义，保证动态 Prompt 中的 schema 与 handler 同源。
+  // Tool definitions fixed at construction ensure schema and handler in dynamic prompts share the same source.
   readonly #toolDefinition: ToolDefinition<ScheduleCronInput>;
-  // 已发布但尚未 ack 的事件 id，防止轮询把同一 outbox 记录重复推入 Inbox。
+  // Published event ids not yet acked, preventing polling from pushing the same outbox record repeatedly into the Inbox.
   readonly #queued = new Set<string>();
-  // 只有 leader 实例可以推进 durable 计划。
+  // Only leader instances can advance durable schedules.
   #leader = false;
-  // 关闭后拒绝 schedule/start/tick。
+  // Rejects schedule/start/tick after shutdown.
   #closed = false;
-  // scheduler 是 supervisor 下的单个受管 worker；失败会被暂存并在下一次公开操作时抛出。
+  // scheduler is a single managed worker under supervisor; failures are stashed and thrown on the next public operation.
   #worker: Promise<void> | undefined;
-  // scheduler 的取消控制器独立保存，以便 close 先停止轮询再等待 worker。
+  // Save scheduler cancellation controllers independently so close stops polling before awaiting workers.
   #schedulerAbort: AbortController | undefined;
-  // worker 异常不会静默丢失，后续公开操作或 close 会重新抛出。
+  // Worker exceptions are not lost silently; subsequent public operations or close will re-throw them.
   #schedulerFailure: unknown | undefined;
-  // 有待处理事件时通知 AgentRunner.runEvents 的可选回调。
+  // Optional callback to notify AgentRunner.runEvents when pending events exist.
   #wakeup: (() => Promise<void>) | undefined;
-  // 串行化手动 tick 与 scheduler tick，避免相邻扫描交错推进状态。
+  // Serializes manual ticks and scheduler ticks to prevent adjacent scans from advancing state concurrently.
   #tickTail: Promise<void> = Promise.resolve();
 
-  // 绑定共享 store、Inbox、Supervisor 与可注入时间边界；构造器本身不启动 worker。
+  // Bind shared store, Inbox, Supervisor, and injectable time boundaries; the constructor itself does not start workers.
   constructor(options: {
     store: CronStore;
     inbox: EventInbox;
@@ -203,35 +203,35 @@ export class CronRuntime {
     };
   }
 
-  // 暴露固定 schedule_cron 定义供组合根注册。
+  // Expose fixed schedule_cron definitions for the composition root to register.
   get toolDefinition(): ToolDefinition<ScheduleCronInput> {
     return this.#toolDefinition;
   }
-  // 暴露共享 Inbox 仅用于组合一致性校验。
+  // Expose shared Inbox only for composition consistency validation.
   get eventInbox(): EventInbox {
     return this.#inbox;
   }
-  // 暴露共享 Supervisor 仅用于组合一致性校验和资源所有权确认。
+  // Expose shared Supervisor only for composition consistency validation and resource ownership verification.
   get supervisor(): JobSupervisor {
     return this.#supervisor;
   }
-  // 事件泵的 pending 状态沿用 Supervisor 中仍未收束的受管任务。
+  // Pending state of the event pump follows unclosed managed tasks in Supervisor.
   get hasPendingWork(): boolean {
     return this.#supervisor.hasPendingWork;
   }
-  // 首次消费事件前等待 Supervisor 完成持久化恢复。
+  // Waits for Supervisor to complete persistence recovery before consuming events for the first time.
   async ready(): Promise<void> {
     await this.#supervisor.ready();
   }
-  // 非阻塞代理共享 Inbox 的 FIFO drain。
+  // Non-blocking delegation of FIFO drain for shared Inbox.
   drainEvents(limit?: number): readonly RuntimeEvent[] {
     return this.#inbox.drain(limit);
   }
-  // 阻塞等待共享 Inbox 至少出现一条事件。
+  // Blocks waiting for at least one event in the shared Inbox.
   async waitForEvents(limit?: number): Promise<readonly RuntimeEvent[]> {
     return await this.#inbox.wait(limit);
   }
-  // 仅 CronEvent 需要删除持久 outbox；其他共享事件由各自运行时负责语义。
+  // Only CronEvent needs persistent outbox deletion; respective runtimes handle semantics for other shared events.
   async acknowledgeEvents(events: readonly RuntimeEvent[]): Promise<void> {
     if (!Array.isArray(events) || !events.every((event) => isRuntimeEvent(event))) {
       throw new TypeError("events must contain RuntimeEvent values");
@@ -251,11 +251,11 @@ export class CronRuntime {
       }
     }
   }
-  // 绑定空闲唤醒回调；回调只请求运行事件回合，不绕过 Runner 的运行锁。
+  // Bind idle wakeup callback; the callback requests running event turns only and does not bypass the Runner run lock.
   bindWakeup(wakeup: () => Promise<void>): void {
     this.#wakeup = wakeup;
   }
-  // 启动时把 scheduler 注册为 supervisor 的受管任务，并同步转发取消信号。
+  // Register scheduler as a managed task of supervisor on startup and forward cancellation signals synchronously.
   start(): void {
     if (this.#closed) throw new CronClosedError("CronRuntime is closed");
     this.#throwSchedulerFailure();
@@ -283,9 +283,9 @@ export class CronRuntime {
       },
     );
   }
-  // 执行一次 leader 争夺、到期迁移、事件发布和可选 Runner 唤醒。
+  // Execute one leader election, expiration migration, event publication, and optional Runner wakeup.
   async tick(): Promise<void> {
-    // tickTail 串行化所有 tick，保证读取、排程和发布事件不会并发交错。
+    // tickTail serializes all ticks to ensure reading, scheduling, and publishing events do not interleave concurrently.
     if (this.#closed) throw new CronClosedError("CronRuntime is closed");
     this.#throwSchedulerFailure();
     const previous = this.#tickTail;
@@ -309,7 +309,7 @@ export class CronRuntime {
       release();
     }
   }
-  // 关闭顺序为停止 scheduler、等待 tick、释放 leader，并聚合所有清理失败。
+  // Shutdown sequence stops scheduler, waits for tick, releases leader, and aggregates all cleanup failures.
   async close(): Promise<void> {
     if (this.#closed && this.#worker === undefined && !this.#leader) {
       this.#throwSchedulerFailure();
@@ -345,7 +345,7 @@ export class CronRuntime {
     if (failures.length > 1) throw new AggregateError(failures, "CronRuntime close failed");
   }
   async #runScheduler(signal: AbortSignal): Promise<void> {
-    // 后台循环只负责“tick + 等待”，不直接执行 cron prompt，业务动作仍要回到 Agent Loop。
+    // The background loop only handles "tick + wait" without directly executing cron prompts; business actions must return to the Agent Loop.
     try {
       while (!this.#closed && !signal.aborted) {
         await this.tick();
@@ -359,15 +359,15 @@ export class CronRuntime {
     }
   }
   async #ensureLeader(): Promise<void> {
-    // leader lease 使用非阻塞尝试；拿不到锁时只为本 session 的 session-only job 生成事件。
+    // leader lease uses non-blocking attempts; if locking fails, generate events only for this session's session-only jobs.
     if (!this.#leader) this.#leader = await this.#store.tryAcquireLeader();
   }
-  // 将 detached scheduler 的失败重新带回受控调用边界。
+  // Bring detached scheduler failures back to controlled call boundaries.
   #throwSchedulerFailure(): void {
     if (this.#schedulerFailure !== undefined) throw this.#schedulerFailure;
   }
   async #publishPending(): Promise<void> {
-    // 已发布的 pending event 在内存中去重，避免 ack 前重复轮询导致重复投递。
+    // Published pending events are deduplicated in memory to avoid duplicate delivery from repeated polling before ack.
     for (const event of await this.#store.pendingEvents(this.#leader)) {
       if (this.#queued.has(event.eventId)) continue;
       this.#inbox.publish(event);
@@ -375,7 +375,7 @@ export class CronRuntime {
     }
   }
   async #schedule(input: ScheduleCronInput, context: ToolContext): Promise<ToolResult> {
-    // 工具边界把已建模的 CronError 转成可返回的 tool result，意外异常继续向上传播。
+    // Tool boundaries convert modeled CronErrors into returnable tool results; unexpected exceptions propagate upward.
     if (this.#closed) {
       return toolError("cron_closed", "CronRuntime is closed");
     }
@@ -394,7 +394,7 @@ export class CronRuntime {
 }
 
 function serializeCronJob(job: CronJob): Record<string, unknown> {
-  // 工具返回值使用稳定 snake_case 字段，避免 Date 实例被环境相关方式序列化。
+  // Tool return values use stable snake_case fields to prevent Date instances from serializing in environment-dependent ways.
   return {
     id: job.id,
     cron: job.cron,
@@ -408,11 +408,11 @@ function serializeCronJob(job: CronJob): Record<string, unknown> {
   };
 }
 
-// 共享事件队列中的最小判别检查；完整字段在创建和持久化恢复边界校验。
+// Minimal discriminant check in shared event queue; full fields validate at creation and persistence recovery boundaries.
 export function isCronEvent(value: RuntimeEvent): value is CronEvent {
   return typeof value === "object" && value !== null && Reflect.get(value, "kind") === "cron";
 }
-// 构造不可变 CronEvent，并把 identity/eventId 映射为 Loop 的上下文身份与幂等键。
+// Construct immutable CronEvent and map identity/eventId to the Loop context identity and idempotency key.
 export function createCronEvent(
   options: Omit<CronEvent, "kind" | "toPayload" | "contextIdentity" | "idempotencyKey">,
 ): CronEvent {
@@ -434,7 +434,7 @@ export function createCronEvent(
       }),
   });
 }
-// 规范 UUID 同时用于状态键和 outbox 幂等标识，拒绝任何可形成路径片段的输入。
+// Canonical UUID used for state keys and outbox idempotency tokens, rejecting inputs that could form path fragments.
 export function canonicalCronId(value: string): string {
   if (
     typeof value !== "string" ||
@@ -444,7 +444,7 @@ export function canonicalCronId(value: string): string {
   return value;
 }
 export function validateCronExpression(value: string): string {
-  // 先做五段、步进和反向范围的显式检查，再交给 cron-parser，坏表达式不会进入持久化。
+  // Explicitly checks five fields, steps, and reverse ranges first before passing to cron-parser, preventing bad expressions from persisting.
   if (typeof value !== "string" || !value.trim())
     throw new CronExpressionError("Cron expression must not be empty");
   const normalized = value.trim().replace(/\s+/gu, " ");
@@ -471,7 +471,7 @@ export function validateCronExpression(value: string): string {
   return normalized;
 }
 export function nextCronOccurrence(expression: string, timezone: string, afterUtc: Date): Date {
-  // cron-parser 负责本地日历计算；候选 UTC instant 返回前还要经过 DST gap/fold 策略。
+  // cron-parser handles local calendar calculations; candidate UTC instants pass DST gap/fold policies before return.
   const normalized = validateCronExpression(expression);
   const normalizedTimezone = validateCronTimezone(timezone);
   if (!(afterUtc instanceof Date) || !Number.isFinite(afterUtc.valueOf()))
@@ -488,7 +488,7 @@ export function nextCronOccurrence(expression: string, timezone: string, afterUt
   }
 }
 
-// 使用 Intl 验证并归一化 IANA 时区名；不接受本地环境的隐式默认时区。
+// Uses Intl to validate and normalize IANA timezone names; rejects implicit default timezones from local environment.
 export function validateCronTimezone(value: string): string {
   if (typeof value !== "string" || !value.trim())
     throw new CronExpressionError("Cron timezone must not be empty");
@@ -501,9 +501,9 @@ export function validateCronTimezone(value: string): string {
   return normalized;
 }
 
-// 以下 helper 把 UTC instant 投影到业务时区的本地字段，并按标准 DOM/DOW OR 语义做 DST 修正。
+// The following helpers project UTC instant to local fields in business timezone and apply DST corrections with standard DOM/DOW OR semantics.
 interface LocalCronParts {
-  // UTC instant 投影到业务时区后的本地日历字段。
+  // Local calendar fields after projecting a UTC instant into the business time zone.
   readonly year: number;
   readonly month: number;
   readonly day: number;
@@ -513,7 +513,7 @@ interface LocalCronParts {
 }
 
 interface CronFieldSet {
-  // 五字段表达式解析后的离散集合，用于 DST 修正阶段重新判定候选。
+  // Discrete set after parsing the five-field expression, used to re-evaluate candidates during DST correction.
   readonly minutes: CronField;
   readonly hours: CronField;
   readonly days: CronField;
@@ -522,9 +522,9 @@ interface CronFieldSet {
 }
 
 interface CronField {
-  // 当前字段允许的数值集合。
+  // Set of numerical values allowed for the current field.
   readonly values: ReadonlySet<number>;
-  // 保留字段是否为通配符，以实现标准 DOM/DOW OR 语义。
+  // Records whether fields are wildcards to implement standard DOM/DOW OR semantics.
   readonly wildcard: boolean;
 }
 
@@ -534,8 +534,8 @@ function adjustDstOccurrence(
   afterUtc: Date,
   candidate: Date,
 ): Date {
-  // cron-parser 对 gap/fold 的候选时间不是唯一答案：gap 推进到首个有效时刻，
-  // fold 让同一个本地钟面保留两个不同的 UTC instant。
+  // Candidate times from cron-parser for gap/fold are not unique: gap advances to the first valid instant,
+  // fold lets the same local clock face retain two different UTC instants.
   let fields: CronFieldSet;
   try {
     fields = parseCronFieldSets(expression);
@@ -579,7 +579,7 @@ function adjustDstOccurrence(
   return candidate;
 }
 
-// 把已验证的五字段表达式展开为本地匹配集合。
+// Expand validated five-field expressions into local match sets.
 function parseCronFieldSets(expression: string): CronFieldSet {
   const fields = expression.split(" ");
   return {
@@ -591,7 +591,7 @@ function parseCronFieldSets(expression: string): CronFieldSet {
   };
 }
 
-// 展开逗号、范围和步进语法；周日 7 同时归一为 0。
+// Expand comma, range, and step syntax; normalize Sunday 7 to 0 simultaneously.
 function parseCronField(value: string, minimum: number, maximum: number): CronField {
   const result = new Set<number>();
   const wildcard = value.split(",").every((item) => item.split("/")[0] === "*");
@@ -624,7 +624,7 @@ function parseCronField(value: string, minimum: number, maximum: number): CronFi
   return { values: result, wildcard };
 }
 
-// 通过 Intl 把 UTC 瞬时转换为指定时区的稳定数字字段。
+// Converts UTC instant to stable numeric fields for the specified time zone via Intl.
 function localCronParts(value: Date, timezone: string): LocalCronParts {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
@@ -650,7 +650,7 @@ function localCronParts(value: Date, timezone: string): LocalCronParts {
   };
 }
 
-// 根据同一瞬时的 UTC 值与本地钟面计算时区偏移，用于识别 DST 跳变。
+// Calculate timezone offset from instantaneous UTC and local clock face to identify DST shifts.
 function timezoneOffsetMinutes(value: Date, parts: LocalCronParts): number {
   return (
     (Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute) - value.valueOf()) /
@@ -658,7 +658,7 @@ function timezoneOffsetMinutes(value: Date, parts: LocalCronParts): number {
   );
 }
 
-// 按 Cron 标准处理 day-of-month 与 day-of-week：两者都受限时使用 OR。
+// Process day-of-month and day-of-week by Cron standards: use OR when both are restricted.
 function matchesCronFields(parts: LocalCronParts, fields: CronFieldSet): boolean {
   const dayMatches = fields.days.values.has(parts.day);
   const weekdayMatches = fields.weekdays.values.has(parts.weekday);
@@ -678,7 +678,7 @@ function matchesCronFields(parts: LocalCronParts, fields: CronFieldSet): boolean
   );
 }
 
-// 生产环境默认 UUID 生成器；测试可在 store 边界注入确定值。
+// Production default UUID generator; tests can inject deterministic values at the store boundary.
 export function randomCronId(): string {
   return randomUUID();
 }

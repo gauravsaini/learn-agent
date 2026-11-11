@@ -4,9 +4,9 @@ import type { ToolCall } from "./messages.js";
 import { toolCall } from "./messages.js";
 import type { OpenAIToolSchema } from "./model.js";
 
-// effect 是权限策略和工具列表可见性的最小事实来源，不依赖工具名称猜测。
+// effect is the minimal source of truth for permission policies and tool list visibility, without guessing from tool names.
 export type EffectClass = "read" | "write" | "execute" | "external";
-// concurrency 是 Dispatcher 判断工具能否转后台执行的显式契约，缺省为 inline。
+// concurrency is the explicit contract for Dispatcher to decide if a tool can run in the background; defaults to inline.
 export type ConcurrencyClass = "inline" | "background_eligible";
 
 export interface ToolContext {
@@ -25,7 +25,7 @@ export interface ToolResult {
   readonly errorCode?: string;
 }
 
-// 成功和失败都返回不可变 ToolResult；错误必须携带稳定错误码。
+// Return immutable ToolResults on both success and failure; errors must carry stable error codes.
 export function toolSuccess(content: string): ToolResult {
   return Object.freeze({ content, isError: false });
 }
@@ -34,7 +34,7 @@ export function toolError(errorCode: string, message: string): ToolResult {
   if (errorCode.trim().length === 0) {
     throw new Error("tool error code must not be empty");
   }
-  // 失败结果必须提供稳定 errorCode，便于模型、Hook 和存储层分类处理。
+  // Failed results must provide stable errorCodes to facilitate classified handling by model, Hook, and storage layers.
   return Object.freeze({
     content: `Error [${errorCode}]: ${message}`,
     isError: true,
@@ -42,7 +42,7 @@ export function toolError(errorCode: string, message: string): ToolResult {
   });
 }
 
-// 任何进入 canonical history 的工具结果都深拷贝，防止 handler 内部可变对象污染会话。
+// Deep-copies any tool result entering canonical history to prevent mutable objects inside handlers from polluting the session.
 export function copyToolResult(result: ToolResult): ToolResult {
   if (!isToolResult(result)) {
     throw new Error("tool result must satisfy the ToolResult contract");
@@ -64,12 +64,12 @@ export interface ToolDefinition<Input> {
   readonly inputSchemaJson?: Readonly<Record<string, unknown>>;
   readonly effect: EffectClass;
   readonly concurrency?: ConcurrencyClass;
-  // source 标识 builtin 或 mcp:... 来源，供权限策略和审计判断工具边界。
+  // source identifies builtin or mcp:... origins for permission policies and audits to evaluate tool boundaries.
   readonly source?: string;
   readonly handler: (input: Input, context: ToolContext) => Promise<ToolResult> | ToolResult;
 }
 
-// StoredToolDefinition 隐藏泛型 Input，统一把 schema 校验放在 invoke 边界。
+// StoredToolDefinition hides generic Input, placing schema validation uniformly at the invoke boundary.
 export interface StoredToolDefinition {
   readonly name: string;
   readonly description: string;
@@ -100,13 +100,13 @@ export function freezePreparedToolCall(
   });
 }
 
-// 工具注册表保存冻结定义，并在分发前按上下文与 schema 建立调用边界；
-// P19 通过批量注册/撤销与不可变快照支持 MCP 连接的动态工具生命周期。
+// The Tool Registry stores frozen definitions, and establishes invocation boundaries by context and schema before dispatch;
+// P19 supports dynamic tool lifecycles for MCP connections via batch registration/revocation and immutable snapshots.
 export class ToolRegistry {
   readonly #definitions: Map<string, StoredToolDefinition>;
   readonly #sourceDefinitions: WeakMap<object, StoredToolDefinition>;
   readonly #mutable: boolean;
-  // 版本号只在成功整体变更后递增；snapshot 与 live registry 版本一致，但不共享 Map。
+  // The version number increments only after a successful complete change; snapshot and live registry versions match, but do not share Maps.
   #version: number;
 
   constructor(
@@ -128,7 +128,7 @@ export class ToolRegistry {
     return this.#version;
   }
 
-  // 单个工具注册委托给批量入口，保持校验、冻结与版本递增行为一致。
+  // Single tool registration delegates to the batch entrypoint, maintaining consistent validation, freezing, and version increment behavior.
   register<Input>(definition: ToolDefinition<Input>): StoredToolDefinition {
     const registered = this.registerMany([definition]);
     const stored = registered[0];
@@ -148,7 +148,7 @@ export class ToolRegistry {
       return Object.freeze([]);
     }
 
-    // 批量注册先整体校验，任一名称冲突都失败，避免留下半个 MCP 连接的工具集。
+    // Batch registration validates as a whole first; fail on any name conflict to avoid leaving half-connected MCP tool sets.
     const names = definitions.map((definition) => definition.name);
     if (new Set(names).size !== names.length) {
       throw new Error("tool registry batch contains duplicate names");
@@ -178,7 +178,7 @@ export class ToolRegistry {
       return;
     }
 
-    // 撤销时按对象身份匹配当前注册项，防止旧连接状态误删重连后的同名工具。
+    // Match current registered items by object identity on revocation to prevent stale connections from deleting reconnected tools of the same name.
     const storedDefinitions = definitions.map((definition) => this.#storedDefinition(definition));
     const names = storedDefinitions.map((definition) => definition.name);
     if (new Set(names).size !== names.length) {
@@ -199,7 +199,7 @@ export class ToolRegistry {
     this.#version += 1;
   }
 
-  // 统一生成冻结的 StoredToolDefinition；source 缺省为 builtin，MCP 工具显式标记来源。
+  // Uniformly generate frozen StoredToolDefinition; source defaults to builtin, while MCP tools explicitly mark origin.
   #storeDefinition<Input>(definition: ToolDefinition<Input>): StoredToolDefinition {
     const source = definition.source === undefined ? "builtin" : definition.source;
     const stored: StoredToolDefinition = Object.freeze({
@@ -219,7 +219,7 @@ export class ToolRegistry {
     return stored;
   }
 
-  // 撤销凭据可以是 StoredToolDefinition，也可以是本注册表发布过的原始 ToolDefinition。
+  // The revocation credential can be StoredToolDefinition or an original ToolDefinition published by this registry.
   #storedDefinition(value: unknown): StoredToolDefinition {
     if (isStoredToolDefinition(value)) {
       return value;
@@ -235,12 +235,12 @@ export class ToolRegistry {
   }
 
   snapshot(): ToolRegistry {
-    // 返回不可变快照，正在执行的回合不会被后续 MCP 连接/断开影响。
+    // Returns an immutable snapshot so executing turns are not affected by subsequent MCP connect or disconnect operations.
     return new ToolRegistry(this.#definitions, false, this.#version);
   }
 
   subset(names: readonly string[]): ToolRegistry {
-    // subset 只暴露显式声明的工具，队友运行时用它限制模型可调用的能力。
+    // subset exposes only explicitly declared tools; teammate runtimes use it to restrict model callable capabilities.
     const definitions = new Map<string, StoredToolDefinition>();
     for (const name of names) {
       const definition = this.#definitions.get(name);
@@ -251,7 +251,7 @@ export class ToolRegistry {
   }
 
   openAITools(): readonly OpenAIToolSchema[] {
-    // 模型侧 schema 与运行时 handler 同源，避免平行定义漂移。
+    // Model-side schema and runtime handler share the same source to avoid parallel definition drift.
     return Object.freeze(
       [...this.#definitions.values()].map((definition) => ({
         type: "function" as const,
@@ -267,10 +267,10 @@ export class ToolRegistry {
   }
 
   prepare(call: ToolCall): PreparedToolCall {
-    // 参数是不可信输入：先解析 JSON，再按 schema 校验，最后冻结完整调用快照。
+    // Arguments are untrusted input: parse JSON first, validate against schema, and freeze a complete call snapshot.
     const definition = this.#definitions.get(call.name);
     if (definition === undefined) {
-      // 工具故障转成可回填消息，循环可继续让模型决定下一步。
+      // Convert tool faults into backfillable messages, allowing the loop to continue and let the model decide the next step.
       return { call, error: toolError("unknown_tool", `Unknown tool: ${call.name}`) };
     }
 
@@ -300,7 +300,7 @@ export class ToolRegistry {
         error: toolError("invalid_arguments", "Tool arguments failed schema validation"),
       };
     }
-    // Pre Hook 只能通过 updatedInput 显式改写，不能就地修改受信任的准备结果。
+    // Pre Hook can only rewrite explicitly via updatedInput; it cannot mutate trusted prepared results in place.
     return freezePreparedToolCall(call, definition, parsed.data);
   }
 
@@ -312,7 +312,7 @@ export class ToolRegistry {
       throw new Error("prepared tool call is incomplete");
     }
     try {
-      // handler 异常统一归一为 tool_execution_error，不让内部错误文本直接进入模型上下文。
+      // handler exceptions normalize to tool_execution_error, preventing internal error text from entering model context directly.
       const result: unknown = await prepared.definition.invoke(prepared.arguments, context);
       if (!isToolResult(result)) {
         return toolError("invalid_tool_result", "Tool handler returned an invalid result");
@@ -324,7 +324,7 @@ export class ToolRegistry {
   }
 }
 
-// 工具名、描述和来源在注册边界校验，避免非法名称或空白描述进入模型 schema。
+// Validate tool names, descriptions, and sources at registration boundaries, avoiding illegal names or blank descriptions in model schemas.
 function validateDefinition<Input>(definition: ToolDefinition<Input>): void {
   if (!/^[A-Za-z0-9_]+$/.test(definition.name)) {
     throw new Error(`invalid tool name: ${definition.name}`);
@@ -347,7 +347,7 @@ function isStoredToolDefinition(value: unknown): value is StoredToolDefinition {
   );
 }
 
-// 深冻结工具参数，防止 handler 或后续 Hook 修改共享对象。
+// Deep freeze tool arguments to prevent handlers or subsequent hooks from modifying shared objects.
 function freezeInput<Input>(value: Input, seen: WeakSet<object> = new WeakSet()): Input {
   if (typeof value !== "object" || value === null) {
     return value;
@@ -362,7 +362,7 @@ function freezeInput<Input>(value: Input, seen: WeakSet<object> = new WeakSet())
   return Object.freeze(value);
 }
 
-// handler 返回值同样属于不可信边界，阻止畸形对象污染会话历史。
+// handler return values also belong to untrusted boundaries, preventing malformed objects polluting session history.
 export function isToolResult(value: unknown): value is ToolResult {
   if (typeof value !== "object" || value === null) {
     return false;

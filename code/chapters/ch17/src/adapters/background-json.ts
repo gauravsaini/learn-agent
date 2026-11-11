@@ -1,4 +1,4 @@
-// JSON 后台任务适配器：把 running/终态持久化到 workspace 内的安全目录，并通过文件锁和原子替换保证状态迁移一致。
+// JSON background task adapter: persists running/terminal states to a safe directory inside workspace, guaranteeing consistent state transitions via file locks and atomic replacement.
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
@@ -30,41 +30,41 @@ import {
   type BackgroundJobStatus as BackgroundJobStatusValue,
 } from "../features/background.js";
 
-// 文件锁超过 30 秒未续期视为陈旧；10 秒续期并每 10ms 重试，兼顾低延迟与断线恢复。
+// File locks not renewed for more than 30 seconds are stale. Renew every 10 seconds and retry every 10ms to balance low latency and disconnection recovery.
 const LOCK_STALE_MS = 30_000;
 const LOCK_UPDATE_MS = 10_000;
 const LOCK_RETRY_MS = 10;
-// Windows 上 proper-lockfile 的临时目录竞争会表现为 EBUSY/ENOTEMPTY/EPERM，这里给有限重试。
+// On Windows, proper-lockfile temp directory contention appears as EBUSY/ENOTEMPTY/EPERM; provide limited retries here.
 const MAX_WINDOWS_LOCK_RACE_RETRIES = 100;
-// 严格 UTF-8 解码器让损坏字节在解析阶段显式失败，而不是被替换成不可见乱码。
+// Strict UTF-8 decoder fails explicitly on corrupted bytes during parsing instead of replacing them with invisible mojibake.
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-// 进程内锁队列：同一 key 的操作按链式 Promise 串行化，避免进程内并发越过跨进程文件锁。
+// In-process lock queue: Operations on the same key are serialized via chained Promises to prevent in-process concurrency from bypassing cross-process file locks.
 const PROCESS_LOCK_TAILS = new Map<string, Promise<void>>();
 
 export interface JsonBackgroundJobStoreOptions {
-  // 测试可注入原子替换函数，用于模拟写盘故障；缺省使用同目录临时文件 + rename。
+  // Tests can inject an atomic replacement function to simulate disk write failures; defaults to temp file in same directory + rename.
   readonly atomicReplace?: (path: string, content: Buffer) => Promise<void>;
 }
 
-// 适配器把后台 job 的 running/终态写入 workspace 内 JSON，核心只依赖 BackgroundJobStore 接口。
+// The adapter writes running/final states of background jobs into JSON in the workspace; core depends only on the BackgroundJobStore interface.
 interface BackgroundPaths {
-  // realpath 后的 workspace 根目录，用于验证所有状态路径都未逃逸。
+  // Workspace root directory after realpath, used to verify all state paths do not escape.
   readonly workspace: string;
-  // 运行时状态根目录，位于 workspace/.agent_tutorial。
+  // Runtime state root directory, located at workspace/.agent_tutorial.
   readonly stateRoot: string;
-  // 后台作业 JSON 文件目录。
+  // Background job JSON file directory.
   readonly root: string;
-  // 跨进程文件锁路径。
+  // Inter-process file lock path.
   readonly lock: string;
 }
 
 export class JsonBackgroundJobStore implements BackgroundJobStore {
-  // 外部输入的 workspace 路径；每次操作时再解析真实路径。
+  // Workspace path from external input; re-resolve the real path on each operation.
   readonly #workspaceInput: string;
-  // 原子替换写入函数；默认实现保证读者不会看到半写文件。
+  // Atomic replacement write function; default implementation ensures readers never see partially written files.
   readonly #atomicReplace: (path: string, content: Buffer) => Promise<void>;
 
-  // 校验外部 workspace 与可选注入点；构造器不访问文件系统。
+  // Validate external workspace and optional injection points; constructor does not access the file system.
   constructor(workspace: string, options: JsonBackgroundJobStoreOptions = {}) {
     if (typeof workspace !== "string" || workspace.trim().length === 0) {
       throw new TypeError("workspace must be a non-empty string");
@@ -77,13 +77,13 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
       options.atomicReplace === undefined ? atomicReplace : options.atomicReplace;
   }
 
-  // 在锁内创建唯一的 running 记录，成功落盘后才允许 Supervisor 启动实际工作。
+  // Create a unique running record inside the lock; allow Supervisor to start actual work only after successful persistence to disk.
   async createRunning(input: {
     readonly jobId: string;
     readonly sourceToolCallId: string;
     readonly toolName: string;
   }): Promise<BackgroundJob> {
-    // 先持久化 running，再允许 Supervisor 启动 worker；启动前的失败不会遗留可恢复的 job。
+    // Persists running first before allowing Supervisor to start worker; failures before start leave no recoverable jobs.
     const job = new BackgroundJob({
       id: input.jobId,
       sourceToolCallId: input.sourceToolCallId,
@@ -105,13 +105,13 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     });
   }
 
-  // 对指定作业执行 running -> 终态的条件写入，竞争失败时返回 undefined。
+  // Execute conditional writes of running -> final state for specified jobs; return undefined on race failure.
   async finishRunning(
     jobId: string,
     status: Exclude<BackgroundJobStatusValue, "running">,
     result: ToolResult,
   ): Promise<BackgroundJob | undefined> {
-    // 条件迁移：只有磁盘中的状态仍是 running 才返回终态 job；后到竞争者返回 undefined。
+    // Conditional transition: return the terminal job only if disk state is still running; subsequent competitors return undefined.
     const id = normalizeLookupId(jobId);
     if (!isBackgroundJobStatus(status) || !isToolResult(result)) {
       throw new BackgroundStorageError("invalid terminal background job update");
@@ -134,9 +134,9 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     });
   }
 
-  // 恢复时批量中断遗留 running 作业，并返回本次真正发生迁移的有序快照。
+  // Batch interrupt leftover running jobs on recovery, and return ordered snapshots of migrations that actually occurred.
   async interruptRunning(): Promise<readonly BackgroundJob[]> {
-    // 进程重启时把遗留 running 统一迁移为 interrupted，并只发布一次中断事件。
+    // Process restart migrates leftover running jobs uniformly to interrupted, and emits an interruption event only once.
     const paths = await this.#preparePaths(false);
     if (paths === undefined) {
       return [];
@@ -164,7 +164,7 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     });
   }
 
-  // 在共享锁保护下读取单个作业，格式错误和不存在统一映射为 not found。
+  // Read a single job under shared lock protection; format errors and non-existence map uniformly to not found.
   async getJob(jobId: string): Promise<BackgroundJob> {
     const id = normalizeLookupId(jobId);
     const paths = await this.#preparePaths(false);
@@ -180,7 +180,7 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     });
   }
 
-  // 返回按规范 UUID 排序的不可变作业快照；存储目录尚未创建时视为空集合。
+  // Returns an immutable job snapshot sorted by canonical UUID; treats as an empty set when the storage directory is not yet created.
   async listJobs(): Promise<readonly BackgroundJob[]> {
     const paths = await this.#preparePaths(false);
     if (paths === undefined) {
@@ -195,9 +195,9 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     );
   }
 
-  // 解析并校验状态目录；create=false 时缺失目录表示尚无作业，而不是存储故障。
+  // Parse and validate the state directory; missing directory when create=false indicates no jobs yet, not storage failure.
   async #preparePaths(create: boolean): Promise<BackgroundPaths | undefined> {
-    // 每次操作都解析真实路径并确认状态目录仍在 workspace 内，拒绝 symlink/junction 逃逸。
+    // Resolve real paths and verify state directories remain inside workspace on every operation, rejecting symlink/junction escapes.
     try {
       const workspace = await realpath(this.#workspaceInput);
       if (!(await stat(workspace)).isDirectory()) {
@@ -237,9 +237,9 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     }
   }
 
-  // 把一次读改写操作包进进程内互斥与跨进程文件锁，并统一包装基础设施异常。
+  // Wrap a read-modify-write operation in in-process mutexes and cross-process file locks, wrapping infrastructure exceptions uniformly.
   async #withLock<T>(paths: BackgroundPaths, operation: () => Promise<T>): Promise<T> {
-    // 进程内队列 + 跨进程文件锁，让读取、条件判断、写入成为同一个临界区。
+    // In-process queue and cross-process file lock make reading, condition evaluation, and writing into the same critical section.
     return await withProcessMutex(paths.root, async () => {
       let release: (() => Promise<void>) | undefined;
       let raceRetries = 0;
@@ -283,9 +283,9 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     });
   }
 
-  // 加载并验证完整目录快照；任一文件损坏时拒绝返回部分可信结果。
+  // Load and validate the complete directory snapshot; refuse partial trusted results when any file is corrupted.
   async #loadJobs(paths: BackgroundPaths): Promise<Map<string, BackgroundJob>> {
-    // 加载时校验文件名、payload id、UTF-8、JSON schema 与状态不变量；任一文件损坏都让整批失败。
+    // Validate file name, payload id, UTF-8, JSON schema, and state invariants on load; any corrupted file fails the whole batch.
     let entries: readonly Dirent[];
     try {
       entries = (await readdir(paths.root, { withFileTypes: true }))
@@ -328,9 +328,9 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
     return jobs;
   }
 
-  // 以稳定 JSON 结构原子替换单个作业文件，保留旧文件直到新内容完整写入。
+  // Atomically replaces single job file with stable JSON structure, preserving old file until new content is fully written.
   async #persistJob(paths: BackgroundPaths, job: BackgroundJob): Promise<void> {
-    // 使用稳定字段顺序的 JSON 通过原子替换落盘，失败时旧文件保持不变。
+    // Persists JSON with stable field ordering via atomic replacement; old file remains unchanged on failure.
     const payload = {
       id: job.id,
       result:
@@ -362,7 +362,7 @@ export class JsonBackgroundJobStore implements BackgroundJobStore {
 }
 
 function parseStoredJob(value: unknown): BackgroundJob {
-  // 磁盘结果先做严格 schema 校验，再归一成 ToolResult；展示层剥离 Error 前缀。
+  // On-disk results undergo strict schema validation before normalization into ToolResult; the presentation layer strips the Error prefix.
   if (!hasExactKeys(value, ["id", "source_tool_call_id", "tool_name", "status", "result"])) {
     throw new BackgroundStorageError("Background job file has an invalid schema");
   }
@@ -409,7 +409,7 @@ function parseStoredJob(value: unknown): BackgroundJob {
   });
 }
 
-// 查询 id 规范化失败统一转 not found，避免把格式错误暴露成存储错误。
+// Canonicalization failure of query IDs consistently converts to not found to avoid exposing format errors as storage errors.
 function normalizeLookupId(value: string): string {
   try {
     return canonicalBackgroundId(value);
@@ -418,7 +418,7 @@ function normalizeLookupId(value: string): string {
   }
 }
 
-// 磁盘 JSON 必须恰好包含预期字段；多余或缺失字段都按损坏处理。
+// On-disk JSON must contain exactly the expected fields; treat extra or missing fields as corruption.
 function hasExactKeys<T extends readonly string[]>(
   value: unknown,
   keys: T,
@@ -431,7 +431,7 @@ function hasExactKeys<T extends readonly string[]>(
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-// 对目录执行 realpath 后再验证工作区归属，阻止符号链接或 junction 绕过路径边界。
+// Execute realpath on directories before validating workspace ownership to prevent symlinks or junctions from bypassing path boundaries.
 async function validateDirectory(workspace: string, path: string, label: string): Promise<void> {
   const resolved = await realpath(path);
   if (!pathIsInside(workspace, resolved) || !(await stat(resolved)).isDirectory()) {
@@ -439,7 +439,7 @@ async function validateDirectory(workspace: string, path: string, label: string)
   }
 }
 
-// 只把 ENOENT 解释为不存在；权限和 I/O 错误继续交给上层存储边界处理。
+// Interpret only ENOENT as non-existent; forward permission and I/O errors to higher-level storage boundaries.
 async function pathExists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -452,15 +452,15 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-// 相对路径为空或仍位于 parent 内才返回 true；绝对路径与 ../ 逃逸都拒绝。
+// Returns true only if the relative path is empty or inside parent; rejects absolute paths and ../ escapes.
 function pathIsInside(parent: string, child: string): boolean {
   const value = relative(parent, child);
   return value === "" || (!value.startsWith("..") && !isAbsolute(value));
 }
 
-// 同一状态目录的调用共享 Promise 尾队列，避免本进程内同时争用同一文件锁。
+// Calls to the same state directory share a Promise tail queue, avoiding concurrent file lock contention in this process.
 async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  // 进程内锁串行化同一 store 的并发调用；跨进程部分由 proper-lockfile 的文件锁保证。
+  // In-process locks serialize concurrent calls to the same store; cross-process concurrency is guaranteed by proper-lockfile file locks.
   const previous = PROCESS_LOCK_TAILS.get(key);
   const result = previous === undefined ? operation() : previous.then(operation);
   const tail = result.then(
@@ -477,9 +477,9 @@ async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Pr
   }
 }
 
-// 使用同目录临时文件、fsync 和 rename 实现单文件原子替换，并始终清理临时文件。
+// Achieves single-file atomic replacement using sibling temporary file, fsync, and rename, always cleaning up the temporary file.
 async function atomicReplace(path: string, content: Buffer): Promise<void> {
-  // 同目录临时文件先 fsync 再 rename，最终路径从不暴露半写内容。
+  // Fsync temporary files in the same directory before rename, so final paths never expose partially written content.
   const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
   try {
@@ -497,24 +497,24 @@ async function atomicReplace(path: string, content: Buffer): Promise<void> {
   }
 }
 
-// 安全读取 Node 错误对象上的 code 字段，用于识别可重试文件系统错误。
+// Safely read the code field on Node error objects to identify retryable filesystem errors.
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
 }
 
-// Windows 锁文件清理或改名瞬间的竞争错误集合。
+// Set of race errors when cleaning up or renaming Windows lock files.
 function isWindowsLockRace(error: unknown): boolean {
   return (
     hasErrorCode(error, "EBUSY") || hasErrorCode(error, "ENOTEMPTY") || hasErrorCode(error, "EPERM")
   );
 }
 
-// 锁竞争和重试之间的短暂等待。
+// Brief wait between lock contention and retries.
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
-// 持久化状态必须是六个状态字面量之一，未知字符串不能进入领域对象。
+// Persisted states must be one of six state literals; unknown strings cannot enter domain objects.
 function isBackgroundJobStatus(value: unknown): value is BackgroundJobStatusValue {
   return Object.values(BackgroundJobStatus).some((status) => status === value);
 }

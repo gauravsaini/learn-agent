@@ -1,18 +1,18 @@
-// 章节内置 MCP 测试服务：提供成功、业务失败、超时和进程终止四类确定性行为。
+// Chapter built-in MCP test service: provides four deterministic behaviors: success, business failure, timeout, and process termination.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
 const label = process.argv[process.argv.indexOf("--label") + 1];
-// label 区分两个同构 server，测试 alias 隔离时可从结果中确认实际路由目标。
+// label distinguishes two isomorphic servers; testing alias isolation can verify actual routing targets from results.
 if (label === undefined || label.trim().length === 0) {
   throw new Error("--label must not be empty");
 }
 
-// 每个演示进程独立启动一个 MCP server，并通过 stdin/stdout 与客户端通信。
+// Each demo process launches an MCP server independently and communicates with clients through stdin/stdout.
 const server = new McpServer({ name: `agent-tutorial-${label}`, version: "0.1.0" });
 
-// lookup 返回结构化结果，用来验证同名远程工具经 alias 隔离后不会串线。
+// lookup returns structured results to verify same-named remote tools do not cross paths after alias isolation.
 server.registerTool(
   "lookup",
   {
@@ -25,7 +25,7 @@ server.registerTool(
   }),
 );
 
-// fail 返回 isError: true，用来验证远程错误只以固定、脱敏的结果进入 Agent。
+// fail returns isError: true to verify remote errors enter the Agent only as fixed, sanitized results.
 server.registerTool(
   "fail",
   { description: "Return a deterministic remote tool error." },
@@ -35,7 +35,7 @@ server.registerTool(
   }),
 );
 
-// delay 按毫秒阻塞响应，用来验证 tools/call 超时和后续连接撤销。
+// delay blocks responses in milliseconds to verify tools/call timeouts and subsequent connection teardown.
 server.registerTool(
   "delay",
   {
@@ -51,7 +51,7 @@ server.registerTool(
   },
 );
 
-// terminate 主动退出子进程，用来验证 transport failure 会触发连接级 Watchdog 清理。
+// terminate exits child processes actively to verify that transport failures trigger connection-level Watchdog cleanup.
 server.registerTool(
   "terminate",
   { description: "Terminate this demo server process." },

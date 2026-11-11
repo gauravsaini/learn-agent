@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook、TODO、Skill、后台/Cron/队友/协议运行时；P17 追加 SQLite 任务认领，P18 追加 Worktree 与 ToolContextProvider。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, TODO, Skills, background/Cron/teammate/protocol runtimes by chapter capabilities; P17 appends SQLite Task Claims, and P18 appends Worktree and ToolContextProvider.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -47,9 +47,9 @@ const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// P17/P18 由组装根注入共享的 claim service 与 worktree 运行时，使 Lead、子代理和队友使用同一认领路径。
+// Composition root injects shared claim service and worktree runtime in P17/P18 so Lead, subagents, and teammates use the same claim path.
 export interface BuildDependencies {
-  // worktreeRuntime 必须与 workStealingRuntime 共享 store，并同时作为 claim service/provider。
+  // worktreeRuntime must share store with workStealingRuntime, acting as claim service/provider simultaneously.
   readonly model: ModelClient;
   readonly workspace: string;
   readonly commandRunner?: CommandRunner;
@@ -70,7 +70,7 @@ export interface BuildDependencies {
 }
 
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 先验证依赖矩阵，避免不同 store、workspace 或 provider 组合进入运行期。
+  // Validates dependency matrix first to prevent mismatched combinations of store, workspace, or provider from entering runtime.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -104,8 +104,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     throw new Error("workStealingRuntime requires chapter 17 or later");
   }
   if (profile.capabilities.has("worktree") && dependencies.worktreeRuntime === undefined) {
-    // P18 强制 worktreeRuntime 与 workStealingRuntime 共享同一 SQLite store，
-    // 并让 WorktreeRuntime 同时充当 TaskClaimService，确保所有认领路径一致。
+    // P18 enforces that worktreeRuntime and workStealingRuntime share the same SQLite store,
+    // Have WorktreeRuntime act simultaneously as TaskClaimService to ensure all claim paths remain consistent.
     throw new Error("worktreeRuntime is required for chapter 18 or later");
   }
   if (!profile.capabilities.has("worktree") && dependencies.worktreeRuntime !== undefined) {
@@ -117,8 +117,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       dependencies.workStealingRuntime.store !== dependencies.worktreeRuntime.store ||
       dependencies.workStealingRuntime.claimService !== dependencies.worktreeRuntime)
   ) {
-    // WorktreeRuntime 同时实现 TaskClaimService 与 ToolContextProvider，
-    // 因此必须与 WorkStealingRuntime 指向同一 SQLite store，避免认领和工具上下文分叉。
+    // WorktreeRuntime implements both TaskClaimService and ToolContextProvider,
+    // Therefore must point to the same SQLite store as WorkStealingRuntime to prevent forks in claims and tool contexts.
     throw new Error(
       "worktreeRuntime must be the WorkStealingRuntime claim service and share its store",
     );
@@ -149,14 +149,14 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   if (!profile.capabilities.has("teammate") && dependencies.teammateRuntime !== undefined) {
     throw new Error("teammateRuntime requires chapter 15 or later");
   }
-  // P16 的协议能力必须显式注入 ProtocolRuntime，旧章节也不允许误带协议依赖。
+  // P16 protocol capability requires explicit ProtocolRuntime injection; earlier chapters cannot inadvertently include protocol dependencies.
   if (profile.capabilities.has("protocol") && dependencies.protocolRuntime === undefined) {
     throw new Error("protocolRuntime is required for chapter 16 or later");
   }
   if (!profile.capabilities.has("protocol") && dependencies.protocolRuntime !== undefined) {
     throw new Error("protocolRuntime requires chapter 16 or later");
   }
-  // 协议与队友必须共享同一个 TeammateRuntime 和 MailboxStore，否则请求与投递会写向不同状态。
+  // The protocol and teammates must share the same TeammateRuntime and MailboxStore, or requests and deliveries write to different states.
   if (
     dependencies.protocolRuntime !== undefined &&
     (dependencies.teammateRuntime === undefined ||
@@ -196,7 +196,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     : undefined;
   const basePermissionPolicy = permissionPolicyForProfile(profile, fileSystem, dependencies);
   const permissionPolicy = basePermissionPolicy;
-  // plan gate 只追加到队友权限策略；Lead 仍使用原策略，避免 Lead 的工具被协议状态误拦。
+  // plan gate only appends to teammate permission policies; Lead retains the original policy to avoid blocking Lead tools.
   const teammatePermissionPolicy =
     dependencies.protocolRuntime === undefined || basePermissionPolicy === undefined
       ? basePermissionPolicy
@@ -229,7 +229,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     if (hooks === undefined || permissionPolicy === undefined) {
       throw new Error("subagent capability requires hooks and permission policy");
     }
-    // 子代理（一次性 Subagent）共享 Lead 的完整工具体系，并通过 worktree provider 继承受限工作区。
+    // Subagents (one-off Subagents) share the Lead's full tool suite and inherit restricted workspaces through worktree provider.
     const subagent = new SubagentTool({
       modelFactory: () => dependencies.model,
       toolsFactory: () => {
@@ -264,7 +264,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     registerTaskTools(tools, dependencies.taskStore);
   }
   if (dependencies.workStealingRuntime !== undefined) {
-    // Lead 注册全部任务工具，包括 create_task；Teammate 在 factory 内注册无 create_task 的版本。
+    // Lead registers all task tools including create_task; Teammate registers the version without create_task inside factory.
     registerLeasedTaskTools(
       tools,
       dependencies.workStealingRuntime.store,
@@ -272,7 +272,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     );
   }
   if (dependencies.backgroundSupervisor !== undefined) {
-    // 主 Agent 注册后台查询与取消工具；子 Agent 不接收后台 Supervisor，因此不暴露这些能力。
+    // Primary Agent registers background query and cancellation tools; subagents receive no background Supervisor, so do not expose these capabilities.
     registerBackgroundJobTools(tools, dependencies.backgroundSupervisor);
   }
   if (dependencies.worktreeRuntime !== undefined) {
@@ -285,28 +285,28 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     tools.register(dependencies.teammateRuntime.spawnToolDefinition);
     tools.register(dependencies.teammateRuntime.sendToolDefinition);
     if (dependencies.protocolRuntime !== undefined) {
-      // Lead 获得 request_shutdown/review_plan；submit_plan 只注册给队友 factory。
+      // Lead receives request_shutdown/review_plan; submit_plan registers only to teammate factory.
       const [requestShutdownTool, reviewPlanTool] =
         dependencies.protocolRuntime.leadToolDefinitions;
       tools.register(requestShutdownTool);
       tools.register(reviewPlanTool);
-      // configureProtocol 校验共享依赖，确保协议消息能路由回同一个 MailboxStore。
+      // configureProtocol validates shared dependencies to ensure protocol messages route back to the same MailboxStore.
       dependencies.teammateRuntime.configureProtocol(dependencies.protocolRuntime);
     }
     if (dependencies.workStealingRuntime !== undefined) {
       dependencies.teammateRuntime.configureWorkStealing(dependencies.workStealingRuntime);
     }
-    // 持续 Teammate 工厂只注册 shell/read/write、消息与有限任务工具，不暴露 create_task。
+    // The persistent Teammate factory only registers shell/read/write, message, and limited task tools; it does not expose create_task.
     const teammateRuntime = dependencies.teammateRuntime;
     teammateRuntime.configureRunnerFactory((name, role, sendDefinition) => {
       const teammateTools = standardTools.tools.subset(["shell", "read_file", "write_file"]);
       teammateTools.register(sendDefinition);
       if (dependencies.protocolRuntime !== undefined) {
-        // 队友只多一个 submit_plan，不能获得 Lead 审批/关机工具。
+        // Teammates only have one extra submit_plan, and cannot obtain Lead approval or shutdown tools.
         teammateTools.register(dependencies.protocolRuntime.submitPlanToolDefinition);
       }
       if (dependencies.workStealingRuntime !== undefined) {
-        // 持续 Teammate 工具集：shell、read_file、write_file + submit_plan + worker 任务工具。
+        // Persistent Teammate tool set: shell, read_file, write_file + submit_plan + worker task tools.
         registerTeammateLeasedTaskTools(
           teammateTools,
           dependencies.workStealingRuntime.store,
@@ -394,7 +394,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     ...(memorySession === undefined ? {} : { turnLifecycle: memorySession }),
     ...(modelRequestExecutor === undefined ? {} : { modelRequestExecutor }),
     ...(toolDispatcher === undefined ? {} : { toolDispatcher }),
-    // 只有 provider 存在时才注入 executionScope，保留 P1-P17 旧章节行为不受影响。
+    // Inject executionScope only when provider exists, preserving P1-P17 legacy chapter behavior.
     ...(dependencies.worktreeRuntime === undefined
       ? {}
       : { toolContextProvider: dependencies.worktreeRuntime }),

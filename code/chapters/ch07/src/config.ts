@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { parse } from "dotenv";
 
-// 基础模型配置；后续章节可显式要求备用模型。
+// Base model configuration; subsequent chapters can explicitly require fallback models.
 const requiredFields = ["OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"] as const;
 
 export class ConfigurationError extends Error {
@@ -27,7 +27,7 @@ export function settingsFromMapping(
   requireFallback = false,
 ): OpenAISettings {
   const fields = requireFallback ? [...requiredFields, "OPENAI_FALLBACK_MODEL"] : requiredFields;
-  // 先收集全部缺失字段，避免用户修复一个字段后才发现下一个字段。
+  // Collects all missing fields first to prevent users from fixing one field only to discover the next.
   const missing = fields.filter((field) => {
     const value = mapping[field];
     return value === undefined || value.trim().length === 0;
@@ -52,7 +52,7 @@ export function settingsFromMapping(
     throw new ConfigurationError(["OPENAI_BASE_URL"]);
   }
   const fallbackModel = mapping.OPENAI_FALLBACK_MODEL;
-  // 返回冻结快照，防止配置在运行中被调用方重写。
+  // Returns a frozen snapshot to prevent configuration from being overwritten by callers during execution.
   return Object.freeze({
     baseUrl: baseUrl.trim(),
     apiKey: apiKey.trim(),

@@ -1,8 +1,8 @@
 /**
- * Node 文件系统适配器：实现 core 的 WorkspaceFileSystem。
- * 所有工具路径必须先经 safePath 从 workspace 相对路径解析为安全绝对路径，
- * 再执行 read/write/edit/glob。Node 错误在适配器边界翻译为领域错误。
- * UTF-8 使用 fatal TextDecoder，非法字节不会被静默替换。
+ * Node file system adapter: implements WorkspaceFileSystem in core.
+ * All tool paths must resolve from workspace relative paths to safe absolute paths via safePath,
+ * Then execute read/write/edit/glob. Node errors are translated to domain errors at the adapter boundary.
+ * UTF-8 uses a fatal TextDecoder. Invalid bytes are not silently replaced.
  */
 import {
   lstat,
@@ -27,14 +27,14 @@ import {
 } from "../core/filesystem.js";
 import type { WorkspaceFileSystem } from "../core/filesystem.js";
 
-// Windows 保留设备名和严格 UTF-8 解码器都属于工作区安全边界。
-// Win32 设备文件名集合；即使带扩展名也不能作为普通工作区路径组件。
+// Windows reserved device names and strict UTF-8 decoders both belong to the workspace security boundary.
+// Set of Win32 device file names; even with extensions, they cannot serve as normal workspace path components.
 const WINDOWS_DEVICE_NAMES = new Set(["AUX", "CLOCK$", "CON", "CONIN$", "CONOUT$", "NUL", "PRN"]);
-// fatal 模式避免无效字节被替换字符掩盖，读工具必须报告编码错误。
+// fatal mode prevents replacement characters masking invalid bytes; read tools must report encoding errors.
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
-// 文件系统适配器把 Node 错误归一为工具层可映射的领域错误。
-// 从未知异常中提取 Node 的 code，不能信任任何异常对象一定具有该字段。
+// The file system adapter normalizes Node errors into domain errors that the tool layer can map.
+// Extracts Node code from unknown exceptions without trusting that any exception object has this field.
 function errorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) {
     return undefined;
@@ -43,9 +43,9 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-// 将 Node 的宽松异常映射为核心文件系统契约的稳定错误类型。
+// Map loose Node exceptions to stable error types of the core filesystem contract.
 function translateFileSystemError(error: unknown): Error {
-  // 已知领域错误原样保留，其余 Node 错误映射为稳定的工具层错误类别。
+  // Retain known domain errors as-is; map other Node errors to stable tool layer error classes.
   if (
     error instanceof WorkspacePathError ||
     error instanceof TextNotFoundError ||
@@ -70,18 +70,18 @@ function translateFileSystemError(error: unknown): Error {
   return new FileSystemOperationError("File system operation failed");
 }
 
-// 判断候选绝对路径是否仍在根目录内，兼容 Windows 与 POSIX 分隔符语义。
+// Determine whether candidate absolute paths remain inside the root directory, compatible with Windows and POSIX separator semantics.
 function isInside(root: string, candidate: string): boolean {
-  // relative 结果既非父目录也非绝对路径，才表示 candidate 仍在 root 内。
+  // relative results indicate candidate remains inside root only when neither parent directory nor absolute path.
   const child = relative(root, candidate);
   return (
     child.length === 0 || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
   );
 }
 
-// 拒绝 Windows 非法字符、尾随空格/点以及设备名，防止跨平台路径语义偏差。
+// Reject Windows illegal characters, trailing spaces/dots, and device names to prevent cross-platform path semantic deviations.
 function isWindowsReservedComponent(component: string): boolean {
-  // 同时拒绝 Win32 非法字符、尾随点/空格和设备文件名。
+  // Reject Win32 illegal characters, trailing dots/spaces, and device file names.
   if (component.endsWith(" ") || component.endsWith(".")) {
     return true;
   }
@@ -107,9 +107,9 @@ function isWindowsReservedComponent(component: string): boolean {
   );
 }
 
-// 将用户路径或 glob 拆成安全相对组件；allowWildcards 只为 glob 的模式字符放行。
+// Split user paths or globs into safe relative components; allowWildcards permits pattern characters only for globs.
 function relativeParts(value: string, label: string, allowWildcards: boolean): string[] {
-  // 同时拒绝 POSIX、Win32 和盘符绝对路径，所有工具路径必须相对工作区。
+  // Reject POSIX, Win32, and drive letter absolute paths; all tool paths must be relative to the workspace.
   if (value.length === 0) {
     throw new WorkspacePathError(`${label} must not be empty`);
   }
@@ -147,9 +147,9 @@ function relativeParts(value: string, label: string, allowWildcards: boolean): s
   return parts;
 }
 
-// 解析并验证工作区真实路径，作为符号链接检查所依据的可信根。
+// Resolve and validate workspace real path, serving as the trusted root for symlink verification.
 async function workspaceRoot(workspace: string): Promise<string> {
-  // 真实路径是后续链接逃逸检查的可信根，而不是调用方传入的词法路径。
+  // The real path is the trusted root for subsequent symlink escape checks, not the lexical path passed by the caller.
   const root = await realpath(workspace);
   const information = await stat(root);
   if (!information.isDirectory()) {
@@ -158,12 +158,12 @@ async function workspaceRoot(workspace: string): Promise<string> {
   return root;
 }
 
-// 向上查找目标最接近的已存在父目录，以便写入新文件前也能验证真实路径边界。
+// Traverse up to the target's nearest existing parent directory to validate real path boundaries before writing new files.
 async function resolvedExistingParent(
   root: string,
   target: string,
 ): Promise<{ physical: string; lexical: string }> {
-  // 写入目标可能尚不存在，向上寻找首个可 realpath 的父目录即可验证链接边界。
+  // Write target might not exist yet; traversing upward to the first parent directory that realpath can resolve verifies link boundaries.
   let current = target;
   while (true) {
     try {
@@ -177,9 +177,9 @@ async function resolvedExistingParent(
   }
 }
 
-// 以词法检查和 realpath 检查双重解析相对路径，阻止 junction 与符号链接逃逸。
+// Dual-resolves relative paths via lexical checks and realpath checks, blocking junction and symlink escapes.
 export async function safePath(workspace: string, relativePath: string): Promise<string> {
-  // 词法检查后再解析现有父目录真实路径，双重防护链接逃逸。
+  // Resolve real path of the existing parent directory after lexical checks for double defense against symlink escapes.
   try {
     const root = await workspaceRoot(workspace);
     const parts = relativeParts(relativePath, "path", false);
@@ -187,7 +187,7 @@ export async function safePath(workspace: string, relativePath: string): Promise
     if (!isInside(root, target)) {
       throw new WorkspacePathError(`Path escapes workspace: ${relativePath}`);
     }
-    // 现有父路径必须解析真实位置，防止 junction 或符号链接把目标带出工作区。
+    // Existing parent paths must resolve to real locations to prevent junctions or symlinks from escaping the workspace.
     const existing = await resolvedExistingParent(root, target);
     const resolved = resolve(existing.physical, relative(existing.lexical, target));
     if (!isInside(root, resolved)) {
@@ -199,7 +199,7 @@ export async function safePath(workspace: string, relativePath: string): Promise
   }
 }
 
-// 用共享严格解码器读取文本，文件含非法 UTF-8 时返回领域错误而非替换字符。
+// Read text with a shared strict decoder, returning a domain error instead of replacement characters when files contain invalid UTF-8.
 function decodeUtf8(bytes: Uint8Array, relativePath: string): string {
   try {
     return UTF8_DECODER.decode(bytes);
@@ -208,8 +208,8 @@ function decodeUtf8(bytes: Uint8Array, relativePath: string): string {
   }
 }
 
-// 统一换行符后按行截断，输出不依赖宿主系统的行尾格式。
-// 尾随空行不计作内容行，保证 read_file 的 limit 在各平台一致。
+// Truncate by lines after normalizing line breaks so output does not depend on host system line endings.
+// Trailing empty lines do not count as content lines, ensuring read_file limit consistency across platforms.
 function splitLines(text: string): string[] {
   if (text.length === 0) {
     return [];
@@ -221,9 +221,9 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-// 将约定的 glob 子集编译为路径级正则；不把未实现模式静默交给宿主 shell。
+// Compile agreed glob subsets into path-level regular expressions; do not pass unimplemented patterns silently to host shells.
 function globRegex(pattern: string): RegExp {
-  // 仅实现工具约定的 glob 子集，匹配对象始终是标准化的相对路径。
+  // Implements only the agreed glob subset for tools; match targets are always normalized relative paths.
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index];
@@ -258,9 +258,9 @@ function globRegex(pattern: string): RegExp {
   return new RegExp(`${source}$`, "u");
 }
 
-// 提取第一个通配符前的确定目录，以缩小 glob 扫描范围并先验证该路径。
+// Extract the deterministic directory before the first wildcard to narrow glob scan scope and validate the path first.
 async function literalPrefix(root: string, parts: readonly string[]): Promise<readonly string[]> {
-  // 从第一个通配符起停止，减少 glob 遍历起点并先验证确定的目录前缀。
+  // Stops at the first wildcard, reduces glob traversal roots, and validates definite directory prefixes first.
   const literal: string[] = [];
   for (const part of parts) {
     if (/[?*[\]]/u.test(part)) {
@@ -274,10 +274,10 @@ async function literalPrefix(root: string, parts: readonly string[]): Promise<re
   return literal;
 }
 
-// Node fs/promises 对 WorkspaceFileSystem 的实现；所有公开操作都通过 safePath 保持工作区边界。
+// Node fs/promises implementation of WorkspaceFileSystem; all public operations maintain workspace boundaries via safePath.
 export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
-  // 所有 I/O 都经 safePath，不能绕过工作区边界直接操作宿主文件。
-  // 读取后统一行尾，limit 只影响返回内容，不影响磁盘文件。
+  // All I/O passes through safePath; cannot bypass workspace boundaries to operate on host files directly.
+  // Normalize line endings after reading; limit affects returned content only, not on-disk files.
   async readFile(workspace: string, relativePath: string, limit?: number): Promise<string> {
     try {
       if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
@@ -295,11 +295,11 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // 在安全目标的父目录内创建缺失目录并写入 UTF-8 字节，返回写入大小。
+  // Create missing directories in the parent directory of the safe target, write UTF-8 bytes, and return the written size.
   async writeFile(workspace: string, relativePath: string, content: string): Promise<number> {
     try {
       const target = await safePath(workspace, relativePath);
-      // 仅在已确认安全的目标父目录中递归创建目录。
+      // Recursively creates directories only within target parent directories confirmed to be safe.
       const bytes = Buffer.from(content, "utf8");
       await mkdir(dirname(target), { recursive: true });
       await writeFileBytes(target, bytes);
@@ -309,14 +309,14 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // 读取、查找并只替换第一次精确文本；找不到时抛出 TextNotFoundError。
+  // Read, find, and replace only the first exact text; throw TextNotFoundError if not found.
   async editFile(
     workspace: string,
     relativePath: string,
     oldText: string,
     newText: string,
   ): Promise<void> {
-    // 精确文本替换只修改首次命中，调用方可据此构造可预测的编辑操作。
+    // Exact text replacement modifies only the first match, allowing callers to construct predictable edit operations.
     try {
       if (oldText.length === 0) {
         throw new RangeError("old_text must not be empty");
@@ -335,7 +335,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // 在安全工作区内遍历目录并返回稳定、去重、使用 / 分隔的相对匹配结果。
+  // Traverse directories in the secure workspace and return stable, deduplicated relative matches separated by /.
   async globFiles(workspace: string, pattern: string): Promise<readonly string[]> {
     try {
       const root = await workspaceRoot(workspace);
@@ -354,7 +354,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
         throw error;
       }
       if (prefix.length === parts.length) {
-        // 无通配符时无需扫描目录，直接按规范化相对路径返回。
+        // Return canonical relative paths directly without scanning directories when there are no wildcards.
         return Object.freeze(matcher.test(normalizedPattern) ? [normalizedPattern] : []);
       }
       if (!startInformation.isDirectory() || startInformation.isSymbolicLink()) {
@@ -362,7 +362,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
       }
       const results: string[] = [];
       const pending = [start];
-      // Dirent.isDirectory() 不会跟随符号链接目录，避免递归越界和链接环。
+      // Dirent.isDirectory() does not follow symlink directories to avoid recursive traversal out of bounds and symlink loops.
       while (pending.length > 0) {
         const directory = pending.pop();
         if (directory === undefined) {

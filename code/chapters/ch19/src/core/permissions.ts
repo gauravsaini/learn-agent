@@ -1,36 +1,36 @@
-// 权限策略在工具执行前集中裁决，并将最终决策写入审计边界；P16 的 plan gate 以不可变规则组合进入队友策略。
+// Permission policy adjudicates before tool execution and writes final decisions to audit; P16 plan gate enters teammate policy as immutable rules.
 import type { WorkspaceWriteBoundary } from "./filesystem.js";
 import type { PreparedToolCall, ToolContext, ToolResult } from "./tools.js";
 import { toolError } from "./tools.js";
 
-// 权限策略在工具执行前集中裁决，并将最终决策写入审计边界。
-// 所有合法决策行为的冻结集合，运行期校验与类型联合共同以它为单一来源。
+// Permission policy adjudicates centrally before tool execution and writes final decisions to the audit boundary.
+// Frozen set of all valid decision actions, serving as the single source of truth for runtime validation and type unions.
 export const PERMISSION_BEHAVIORS = Object.freeze(["allow", "deny", "ask", "passthrough"] as const);
-// 权限参与方可返回的行为：ask 必须经审批收敛，passthrough 最终归为默认 allow。
+// Behaviors that permission participants can return: ask must resolve through approval; passthrough defaults to allow.
 export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number];
 
-// 权限请求、规则或决策违反领域契约时抛出的稳定错误类型。
+// Stable error type thrown when permission requests, rules, or decisions violate domain contracts.
 export class PermissionContractError extends Error {}
 
-// 在构造边界校验未知值是否为受支持的权限行为。
+// Validate whether unknown values are supported permission actions at the construction boundary.
 export function isPermissionBehavior(value: unknown): value is PermissionBehavior {
-  // 显式枚举保证新增 behavior 时所有校验点都必须更新。
+  // Explicit enums ensure all validation sites must update when adding new behavior.
   return PERMISSION_BEHAVIORS.some((behavior) => behavior === value);
 }
 
-// 一个不可变的权限结论，记录行为、可解释原因和产生该结论的来源。
+// An immutable permission decision that records the action, explanatory reason, and source of the decision.
 export class PermissionDecision {
-  // 最终行为；deny/ask/allow/passthrough 的优先级由策略合并器统一解释。
-  // 最终或中间决策行为。
+  // Final behavior; the policy merger centrally interprets priorities of deny/ask/allow/passthrough.
+  // Final or intermediate decision behavior.
   readonly behavior: PermissionBehavior;
-  // 面向用户和审计的稳定理由，不承载异常堆栈。
-  // 面向审计和模型的非空说明。
+  // Stable reason for users and audits, without carrying exception stack traces.
+  // Non-empty description for audits and the model.
   readonly reason: string;
-  // 标识决定来源，便于区分系统边界、规则、审批和默认路径。
-  // 规则、审批器或默认策略的稳定来源名。
+  // Identifiers determine sources, helping distinguish system boundaries, rules, approvals, and default paths.
+  // Stable source name of a rule, authorizer, or default policy.
   readonly source: string;
 
-  // 校验三个决策字段并冻结实例，防止决策在审计和执行之间被篡改。
+  // Validate three decision fields and freeze instances to prevent tampering with decisions between audit and execution.
   constructor(behavior: PermissionBehavior, reason: string, source: string) {
     if (!isPermissionBehavior(behavior)) {
       throw new PermissionContractError("behavior must be a PermissionBehavior");
@@ -47,14 +47,14 @@ export class PermissionDecision {
     Object.freeze(this);
   }
 
-  // 仅 allow 表示 handler 可以实际执行；ask/passthrough 不能直接放行。
+  // Only allow means handler can actually execute; ask/passthrough cannot permit execution directly.
   get isAllowed(): boolean {
     return this.behavior === "allow";
   }
 
-  // 将最终 deny 转成工具消息；其他中间行为必须由 PermissionPolicy 先收敛。
+  // Convert final deny into tool messages; other intermediate actions must be resolved by PermissionPolicy first.
   toToolResult(): ToolResult {
-    // 只有最终拒绝能回填为工具结果；ask 与 passthrough 必须先被策略消解。
+    // Backfill only final rejections as tool results; policy must resolve ask and passthrough first.
     if (this.behavior !== "deny") {
       throw new PermissionContractError("only a final deny decision can become a tool result");
     }
@@ -62,35 +62,35 @@ export class PermissionDecision {
   }
 }
 
-// 创建 PermissionRequest 所需的已准备调用、受控上下文和可选上游建议。
+// Prepared call, controlled context, and optional upstream advice needed to create PermissionRequest.
 export interface PermissionRequestOptions {
-  // 已完成 schema 校验且被冻结的调用快照，权限层不能重新解析原始 JSON。
-  // 已通过工具名称与参数 schema 校验的调用。
+  // Frozen call snapshot validated by schema; the permission layer cannot re-parse raw JSON.
+  // Calls validated against tool names and parameter schemas.
   readonly prepared: PreparedToolCall;
-  // workspace 和 identity 决定路径边界与 P16 plan gate 的主体。
-  // 本次调用的工作区和身份边界。
+  // workspace and identity determine path boundaries and subjects for the P16 plan gate.
+  // Workspace and identity boundaries for this call.
   readonly context: ToolContext;
-  // Hook 或规则建议，最终仍需经过 strongestDecision 合并。
-  // 先前参与方给出的不可变候选决策。
+  // Hook or rule recommendations must ultimately merge through strongestDecision.
+  // Immutable candidate decisions provided by previous participants.
   readonly recommendations?: readonly PermissionDecision[];
-  // 当前 ask 决策交给审批器时的候选结论。
-  // 传给人工审批器的 ask 决策，不能伪装为 allow 或 deny。
+  // Candidate conclusion when handing the current ask decision to the approver.
+  // Ask decision passed to manual approver, cannot disguise as allow or deny.
   readonly proposedDecision?: PermissionDecision;
 }
 
-// 权限策略的输入值对象；只接受有效工具调用以避免权限层承担参数修复职责。
+// Input value object for permission policy; accepts only valid tool calls to avoid making the permission layer fix parameters.
 export class PermissionRequest {
-  // 权限决策唯一消费的调用快照。
-  // 仅接受已完成 schema 校验的调用，权限层不负责修复无效工具参数。
+  // The invocation snapshot consumed exclusively by permission decisions.
+  // Accepts only calls that passed schema validation; permission layer does not fix invalid tool parameters.
   readonly prepared: PreparedToolCall;
-  // 执行身份和工作区边界，不能由工具输入伪造。
+  // Execution identity and workspace boundaries cannot be forged by tool inputs.
   readonly context: ToolContext;
-  // 所有参与者的建议冻结副本，防止审批过程中被修改。
+  // Frozen copy of all participant suggestions, preventing modification during approval processes.
   readonly recommendations: readonly PermissionDecision[];
-  // 仅 ask 请求存在；allow/deny 不能伪装成待审批状态。
+  // Exists only for ask requests; allow/deny cannot disguise as pending approval state.
   readonly proposedDecision: PermissionDecision | undefined;
 
-  // 验证请求状态、复制建议并冻结对象，保证审批与审计看到同一快照。
+  // Validates request state, copies suggestions, and freezes object, ensuring approval and audit see the same snapshot.
   constructor(options: PermissionRequestOptions) {
     if (
       options.prepared.error !== undefined ||
@@ -121,39 +121,39 @@ export class PermissionRequest {
   }
 }
 
-// 规则的纯匹配谓词；异常由策略视作拒绝而不是放行。
+// Pure matching predicate of the rule; exceptions are treated by the policy as deny rather than allow.
 export type PermissionMatcher = (request: PermissionRequest) => boolean | Promise<boolean>;
 
-// 创建一条策略规则所需的静态元数据和匹配函数。
+// Static metadata and matcher function required to create a policy rule.
 export interface PermissionRuleOptions {
-  // 规则名称同时作为审计 source 和异常定位标签。
-  // 审计和决策 source 使用的稳定规则名。
+  // Rule names serve as audit sources and exception tracking labels simultaneously.
+  // Stable rule names used by audit and decision sources.
   readonly name: string;
-  // 匹配后提出的候选行为，最终仍受系统硬边界约束。
-  // 规则匹配后提出的行为。
+  // Candidate actions proposed after matching remain constrained by system hard boundaries.
+  // Proposed action after a rule matches.
   readonly behavior: PermissionBehavior;
-  // 面向审计和审批器的稳定说明。
-  // 规则决策的可解释原因。
+  // Stable description for audits and approvers.
+  // Explainable reason for a rule decision.
   readonly reason: string;
-  // 根据完整 PermissionRequest 决定规则是否适用。
-  // 对 PermissionRequest 的匹配条件。
+  // Determine whether the rule applies based on the complete PermissionRequest.
+  // Matching conditions for PermissionRequest.
   readonly matches: PermissionMatcher;
 }
 
-// 不可变的单条权限规则；只提出候选决策，合并优先级由策略统一控制。
+// Immutable single permission rule; proposes candidate decisions only, while policy centrally controls merge priority.
 export class PermissionRule {
-  // 冻结规则身份，避免运行中修改 plan gate 的语义。
+  // Freezes rule identity to prevent modifying plan gate semantics at runtime.
   readonly name: string;
-  // 匹配成功时贡献的候选行为。
+  // Candidate actions contributed when matching succeeds.
   readonly behavior: PermissionBehavior;
-  // 匹配成功时写入决策的稳定理由。
+  // Write a stable reason for the decision when matching succeeds.
   readonly reason: string;
-  // 可异步访问协议状态的匹配器。
+  // Matcher that can access protocol state asynchronously.
   readonly matches: PermissionMatcher;
 
-  // 校验规则元数据和回调可调用性，再冻结规则供策略长期复用。
+  // Validate rule metadata and callback callability, then freeze rules for long-term policy reuse.
   constructor(options: PermissionRuleOptions) {
-    // 规则名称、行为和原因在构造时受类型保护；匹配函数则接受任意运行时检验。
+    // Rule name, action, and reason are type-protected during construction; match functions accept arbitrary runtime checks.
     if (typeof options.name !== "string" || options.name.trim().length === 0) {
       throw new PermissionContractError("permission rule name must not be empty");
     }
@@ -174,7 +174,7 @@ export class PermissionRule {
   }
 
   async evaluate(request: PermissionRequest): Promise<PermissionDecision | undefined> {
-    // matcher 支持异步；规则自身不吞异常，策略层会把异常统一转成 deny。
+    // matcher supports async; rules do not swallow exceptions, and the policy layer normalizes exceptions to deny.
     if (!(await this.matches(request))) {
       return undefined;
     }
@@ -183,46 +183,46 @@ export class PermissionRule {
 }
 
 export interface ApprovalProvider {
-  // 只接收已合并的 ask 请求，必须返回显式 allow 或 deny 才能放行。
-  // 异步边界；异常、非法返回、无终端输入均为 fail-closed 的拒绝理由。
+  // Only accept merged ask requests; require an explicit allow or deny before allowing execution.
+  // Asynchronous boundary; exceptions, illegal returns, and absent terminal inputs are all fail-closed rejection reasons.
   decide(request: PermissionRequest): Promise<PermissionDecision>;
 }
 
 export interface AuditSink {
-  // 记录最终决策；审计失败由策略调用边界向上暴露。
-  // 审计记录在最终决定产生后调用，失败则阻止 handler 执行。
+  // Record the final decision; audit failures are exposed upward by the policy call boundary.
+  // Audit records are invoked after final decisions are made; failures block handler execution.
   record(request: PermissionRequest, decision: PermissionDecision): Promise<void>;
 }
 
-// 创建 PermissionPolicy 的可选参与方；省略的参与方由默认 fail-closed 规则补齐。
+// Optional participants for creating PermissionPolicy; omitted participants are filled in by default fail-closed rules.
 export interface PermissionPolicyOptions {
-  // 顺序注册的业务规则，最终按行为强度合并。
-  // 按顺序评估的静态规则集合。
+  // Sequentially registered business rules, merged eventually by behavioral strength.
+  // A static rule collection evaluated in order.
   readonly rules?: readonly PermissionRule[];
-  // ask 决策的人工或自动审批边界。
-  // 处理 ask 决策的人工或外部审批边界。
+  // The manual or automated approval boundary for ask decisions.
+  // Handle human or external approval boundaries for ask decisions.
   readonly approval?: ApprovalProvider;
-  // 最终决策的持久审计边界。
-  // 最终决策的必经审计边界。
+  // Persistent audit boundary for final decisions.
+  // Required audit boundary for final decisions.
   readonly audit?: AuditSink;
-  // write 工具的真实 workspace 路径校验器。
-  // 对写路径执行真实路径安全检查的基础设施边界。
+  // Validates the real workspace path for the write tool.
+  // Infrastructure boundary for executing real path security checks on write paths.
   readonly writeBoundary?: WorkspaceWriteBoundary;
 }
 
-// 统一合并系统边界、规则和人工审批，并在执行前产出唯一最终决策。
+// Uniformly merge system boundaries, rules, and manual approvals to produce a single final decision before execution.
 export class PermissionPolicy {
-  // 规则冻结快照；withRules 通过新实例追加，避免污染 Lead 策略。
-  // 决策顺序固定为工作区边界、匹配规则、默认策略和人工审批。
+  // Frozen rules snapshot; withRules appends via a new instance to avoid polluting Lead policy.
+  // Decision order is fixed: workspace boundaries, matching rules, default policy, and manual approval.
   readonly #rules: readonly PermissionRule[];
-  // 缺失时 ask fail-closed 为 deny。
+  // When missing, ask fails closed to deny.
   readonly #approval: ApprovalProvider | undefined;
-  // 可选审计 sink，记录所有最终结论。
+  // Optional audit sink that records all final conclusions.
   readonly #audit: AuditSink | undefined;
-  // 只由 write 工具使用的路径边界适配器。
+  // Path boundary adapter used only by the write tool.
   readonly #writeBoundary: WorkspaceWriteBoundary | undefined;
 
-  // 验证规则列表并固定所有参与方引用；运行时决策不允许更换策略组成。
+  // Validates rule list and fixes all participant references; runtime decisions do not allow changing policy composition.
   constructor(options: PermissionPolicyOptions = {}) {
     const rules = options.rules === undefined ? [] : options.rules;
     if (!Array.isArray(rules) || !rules.every((rule) => rule instanceof PermissionRule)) {
@@ -234,7 +234,7 @@ export class PermissionPolicy {
     this.#writeBoundary = options.writeBoundary;
   }
 
-  // 规则组合返回新策略而不是原地修改；P16 的 plan gate 借此只追加到队友策略，不污染 Lead 策略。
+  // Rule composition returns a new policy instead of modifying in place; P16 plan gate appends only to teammate policy without polluting Lead policy.
   withRules(rules: readonly PermissionRule[]): PermissionPolicy {
     if (!Array.isArray(rules) || !rules.every((rule) => rule instanceof PermissionRule)) {
       throw new PermissionContractError("rules must contain PermissionRule values");
@@ -247,12 +247,12 @@ export class PermissionPolicy {
     });
   }
 
-  // 按固定优先级计算最终 allow 或 deny；审计失败会向调用方传播并阻止工具执行。
+  // Calculate final allow or deny by fixed priority. Audit failure propagates to callers and blocks tool execution.
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
     if (!(request instanceof PermissionRequest)) {
       throw new PermissionContractError("request must be a PermissionRequest");
     }
-    // 系统硬边界先参与合并，后续 allow 不能覆盖它产生的 deny。
+    // System hard boundaries participate in merging first; subsequent allows cannot override denys produced by them.
     const candidates: PermissionDecision[] = [];
     const workspaceBoundary = await this.#workspaceBoundaryDecision(request);
     if (workspaceBoundary !== undefined) {
@@ -267,7 +267,7 @@ export class PermissionPolicy {
     const proposed = strongestDecision(candidates);
     let final: PermissionDecision;
     if (proposed.behavior === "ask") {
-      // 人工审批只能将 ask 收敛为 allow 或 deny，不能重新引入中间状态。
+      // Manual approval can only resolve ask into allow or deny; it cannot reintroduce intermediate states.
       final = await this.#resolveApproval(request, proposed);
     } else if (proposed.behavior === "passthrough") {
       final = new PermissionDecision("allow", "No permission rule blocked the request", "default");
@@ -281,13 +281,13 @@ export class PermissionPolicy {
   }
 
   async #evaluateRules(request: PermissionRequest): Promise<readonly PermissionDecision[]> {
-    // 并行求值全部规则，再按 deny > ask > allow 合并；任一规则异常按 deny fail-closed。
+    // Evaluate all rules in parallel, then merge by deny > ask > allow; fail-closed as deny on any rule exception.
     const results = await Promise.all(
       this.#rules.map(async (rule) => {
         try {
           return await rule.evaluate(request);
         } catch {
-          // 单条规则的故障按拒绝处理，防止策略异常造成未审查的副作用。
+          // Treat failures in a single rule as deny, preventing policy exceptions from causing unreviewed side effects.
           return new PermissionDecision("deny", `Permission rule failed: ${rule.name}`, rule.name);
         }
       }),
@@ -349,7 +349,7 @@ export class PermissionPolicy {
       return undefined;
     }
     try {
-      // 真实路径解析由组合根注入的文件系统边界完成，core 不依赖具体 adapter。
+      // Real path resolution is performed by the file system boundary injected by the composition root; core does not depend on specific adapters.
       const allowed = await this.#writeBoundary.isPathWithinWorkspace(
         request.context.workspace,
         rawPath,
@@ -374,10 +374,10 @@ export class PermissionPolicy {
   }
 }
 
-// 在冲突候选中选择最保守的 deny、ask、allow；没有候选时返回 passthrough。
+// Select the most conservative among conflicting candidates (deny, ask, allow); return passthrough when no candidates exist.
 function strongestDecision(decisions: readonly PermissionDecision[]): PermissionDecision {
-  // deny 是系统硬边界，优先级最高；ask 次之；只有没有任何参与者拒绝时才落到 allow。
-  // 多条建议冲突时选择最保守行为，避免宽松规则覆盖显式拒绝。
+  // deny is the system hard boundary with highest priority; ask is next; allow applies only when no participant denies.
+  // Select the most conservative behavior when multiple suggestions conflict, preventing loose rules from overriding explicit denies.
   for (const behavior of ["deny", "ask", "allow"] as const) {
     const decision = decisions.find((candidate) => candidate.behavior === behavior);
     if (decision !== undefined) {
@@ -391,9 +391,9 @@ function strongestDecision(decisions: readonly PermissionDecision[]): Permission
   );
 }
 
-// 缺失、异常或无效的审批响应统一转换为拒绝，保证 ask 永不静默放行。
+// Convert missing, exceptional, or invalid approval responses to deny, ensuring ask never allows silently.
 function implicitApprovalDenial(proposed: PermissionDecision): PermissionDecision {
-  // 审批提供者异常或返回无效决策时 fail closed。
+  // Approval provider exceptions or invalid decision returns fail closed.
   return new PermissionDecision(
     "deny",
     `Approval was not explicitly granted: ${proposed.reason}`,
@@ -401,9 +401,9 @@ function implicitApprovalDenial(proposed: PermissionDecision): PermissionDecisio
   );
 }
 
-// 所有 execute 工具的默认候选为 ask，即使没有显式匹配规则也需要人工批准。
+// Default candidate for all execute tools is ask; human approval is required even without explicit matching rules.
 function shellDefaultDecision(request: PermissionRequest): PermissionDecision | undefined {
-  // 未被规则命中的 execute 工具仍默认要求批准。
+  // Execute tools not matched by rules still require approval by default.
   const definition = request.prepared.definition;
   if (definition === undefined) {
     throw new PermissionContractError("permission request lost its tool definition");

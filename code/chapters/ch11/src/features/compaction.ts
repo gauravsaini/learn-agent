@@ -15,62 +15,62 @@ import type { ModelClient } from "../core/model.js";
 import { copyToolResult, isToolResult, toolSuccess } from "../core/tools.js";
 import type { ToolResult } from "../core/tools.js";
 
-// 默认预算均按 UTF-8 byte 计算；集中为常量便于测试注入小预算。
-// 单个工具结果超过此 UTF-8 字节数时优先落盘并只回填引用预览。
+// Default budgets are all calculated in UTF-8 bytes; centralized as constants to facilitate tests injecting small budgets.
+// When a single tool result exceeds this UTF-8 byte count, persist to disk first and backfill only reference previews.
 export const DEFAULT_PERSIST_THRESHOLD_BYTES = 30_000;
-// 同一轮结果允许留在上下文中的总预算，超出部分按大小优先持久化。
+// Total budget allowed to remain in context for one turn's results; excess parts persist prioritizing by size.
 export const DEFAULT_BATCH_BUDGET_BYTES = 200_000;
-// 工具结果引用保留的头部预览字节数。
+// Head preview bytes retained by tool result references.
 export const DEFAULT_PREVIEW_HEAD_BYTES = 2_000;
-// 工具结果引用保留的尾部预览字节数。
+// Tail preview bytes retained by tool result references.
 export const DEFAULT_PREVIEW_TAIL_BYTES = 2_000;
-// 微压缩时保留的最近完整工具交换组数量。
+// Count of recent complete tool exchange groups retained during micro-compaction.
 export const DEFAULT_KEEP_RECENT_TOOL_GROUPS = 3;
-// prompt-too-long 响应式压缩后保留的最近消息组数量。
+// Number of recent message groups retained after prompt-too-long reactive compaction.
 export const DEFAULT_REACTIVE_TAIL_GROUPS = 5;
-// 请求历史超过此预算时，在模型调用前主动生成摘要。
+// Generate a summary proactively before model calls when request history exceeds this budget.
 export const DEFAULT_PROACTIVE_THRESHOLD_BYTES = 50_000;
-// snip 压缩允许保留的最大消息组数。
+// Maximum number of message groups allowed by snip compaction.
 export const DEFAULT_SNIP_MAX_GROUPS = 50;
-// snip 压缩保留的最早消息组数，用于保留任务开端上下文。
+// Number of earliest message groups retained by snip compaction to preserve initial task context.
 export const DEFAULT_SNIP_KEEP_HEAD_GROUPS = 3;
 export const COMPACTED_TOOL_RESULT = "[Earlier tool result compacted. Re-run if needed.]";
 
-// 默认阈值均按 UTF-8 byte 计算；集中为常量便于测试注入小预算。
-// 默认预算统一放在模块顶部：字节阈值按 UTF-8 byte，组数按完整消息组；测试可注入小值。
-const SUMMARY_SYSTEM_PROMPT = `请将当前 Agent 历史压缩为一个 JSON object。
-只能返回 JSON，不得调用工具。JSON 必须且只能包含：
-current_goal: 非空字符串；
-key_findings: 字符串数组；
-files_read_or_changed: 字符串数组；
-remaining_work: 字符串数组；
-user_constraints: 字符串数组。`;
+// Default thresholds are all calculated in UTF-8 bytes; centralized as constants to facilitate tests injecting small budgets.
+// Default budgets are centrally placed at module top: Byte thresholds by UTF-8 bytes, group counts by complete message groups; tests can inject small values.
+const SUMMARY_SYSTEM_PROMPT = `Compress the current Agent history into a JSON object.
+Must return only JSON, do not call tools. JSON must strictly and only contain:
+current_goal: Non-empty string;
+key_findings: Array of strings;
+files_read_or_changed: Array of strings;
+remaining_work: Array of strings;
+user_constraints: Array of strings.`;
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_ARTIFACT_ID_LENGTH = 96;
 
-// 压缩层把超长结果移出模型上下文，但保留可追溯的 workspace artifact 引用。
-// 压缩领域错误的公共基类，调用方按子类决定是拒绝、清理还是重试。
+// The compaction layer moves oversized results out of model context while keeping traceable workspace artifact references.
+// Common base class for compaction domain errors; callers decide to deny, clean up, or retry based on subclasses.
 export class CompactionError extends Error {
   override readonly name: string = "CompactionError";
 }
 
-// artifact 路径或目录不满足安全边界，例如 ID 非法、符号链接逃逸。
+// Artifact path or directory violates security boundaries, such as an invalid ID or symlink escape.
 export class ArtifactPathError extends CompactionError {
   override readonly name: string = "ArtifactPathError";
 }
 
-// 目标 artifact 已存在；独占发布失败时不覆盖旧文件。
+// Target artifact already exists; do not overwrite old files when exclusive publishing fails.
 export class ArtifactConflictError extends CompactionError {
   override readonly name: string = "ArtifactConflictError";
 }
 
-// 同一恢复窗口内已经尝试过 prompt-too-long 压缩，禁止再次压缩。
+// Prompt-too-long compaction was already attempted in the same recovery window; further compaction is forbidden.
 export class PromptTooLongRetryError extends CompactionError {
   override readonly name: string = "PromptTooLongRetryError";
 }
 
 export interface CompactionSummaryOptions {
-  // 当前目标、事实、文件、剩余工作和约束共同构成可恢复的最小摘要。
+  // Current goals, facts, files, remaining work, and constraints together form the minimal recoverable summary.
   readonly currentGoal: string;
   readonly keyFindings: readonly string[];
   readonly filesReadOrChanged: readonly string[];
@@ -78,7 +78,7 @@ export interface CompactionSummaryOptions {
   readonly userConstraints: readonly string[];
 }
 
-// 摘要对象是模型输出的强类型边界，字段必须在构造时校验。
+// The summary object is a strongly typed boundary for model output. Validate fields at construction.
 export class CompactionSummary {
   readonly currentGoal: string;
   readonly keyFindings: readonly string[];
@@ -97,12 +97,12 @@ export class CompactionSummary {
 }
 
 export interface HistorySummarizer {
-  // 摘要器只读消息快照；不得修改 canonical history 或调用工具。
+  // The summarizer only reads message snapshots. It must not modify canonical history or call tools.
   summarize(history: readonly ChatMessage[], signal?: AbortSignal): Promise<CompactionSummary>;
 }
 
-// 摘要请求没有工具，且只接受 stop + 严格 JSON，避免压缩流程引入新的副作用。
-// 使用主模型完成摘要：请求不含工具，输出必须是严格 JSON，避免摘要层产生副作用。
+// Summary requests have no tools and only accept stop + strict JSON to prevent compaction from introducing side effects.
+// Uses primary model to complete summary: requests contain no tools, outputs must be strict JSON, avoiding side effects in summary layer.
 export class ModelHistorySummarizer implements HistorySummarizer {
   readonly #model: ModelClient;
 
@@ -118,9 +118,9 @@ export class ModelHistorySummarizer implements HistorySummarizer {
     signal?: AbortSignal,
   ): Promise<CompactionSummary> {
     const { snapshot } = validatedGroups(history);
-    // 摘要请求没有工具且必须 stop；任何工具调用或截断都会让压缩失败。
-    // 摘要请求把历史附加在固定 system prompt 之后，且不携带工具定义。
-    // 模型输出工具调用、被截断或返回空内容都视为压缩失败，不能让坏摘要进入请求历史。
+    // Summary requests have no tools and must stop. Any tool call or truncation fails compaction.
+    // Summary requests append history after the fixed system prompt and carry no tool definitions.
+    // Tool calls, truncation, or empty content from model output are treated as compaction failures; bad summaries must not enter request history.
     const reply = await this.#model.complete(
       Object.freeze({
         messages: Object.freeze([systemMessage(SUMMARY_SYSTEM_PROMPT), ...snapshot]),
@@ -145,11 +145,11 @@ export class ModelHistorySummarizer implements HistorySummarizer {
 }
 
 export interface ArtifactReference {
-  // 工件的绝对路径，仅供本地清理；模型使用 relativePath。
+  // Absolute path of the artifact, for local cleanup only; models use relativePath.
   readonly path: string;
-  // 相对工作区路径，可安全写入工具结果和摘要。
+  // Relative workspace path, safe to write tool results and summaries.
   readonly relativePath: string;
-  // 落盘前正文的 UTF-8 字节数，帮助模型判断是否需要重新读取。
+  // UTF-8 byte count of body before flushing to disk, helping the model judge whether to re-read.
   readonly originalBytes: number;
 }
 
@@ -159,28 +159,28 @@ export interface ToolResultArtifact {
 }
 
 export interface ToolResultBudgetOutcome {
-  // 与输入结果一一对应的替换快照，保证 tool_call 配对关系不变。
+  // Replacement snapshot matching input results one-to-one, preserving tool_call pairings.
   readonly results: readonly ToolResult[];
   readonly artifacts: readonly ToolResultArtifact[];
 }
 
 export interface HistoryCompactionOutcome {
-  // 下一次模型请求使用的摘要加尾部消息快照。
+  // Snapshot of summary plus tail messages used for the next model request.
   readonly history: readonly ChatMessage[];
-  // canonical transcript 的持久化引用，失败恢复时仍可定位完整历史。
+  // Persistent reference to the canonical transcript; locates full history during failure recovery.
   readonly transcript: ArtifactReference;
 }
 
-// 消息组是压缩的最小单位：普通消息单独成组，assistant 工具调用与其全部结果成一组。
+// A message group is the smallest unit of compaction: normal messages form single groups, and assistant tool calls group with all their results.
 interface MessageGroup {
   readonly messages: readonly ChatMessage[];
   readonly isToolExchange: boolean;
 }
 
 export interface CompactionManagerOptions {
-  // 所有 artifact 必须落在此工作区下，路径边界在构造时解析。
+  // All artifacts must fall under this workspace; path boundaries are resolved at construction time.
   readonly workspace: string;
-  // 生成结构化摘要的模型边界；摘要请求禁用工具。
+  // Model boundary for generating structured summaries; summary requests disable tools.
   readonly summarizer: HistorySummarizer;
   readonly idGenerator?: () => string;
   readonly persistThresholdBytes?: number;
@@ -194,7 +194,7 @@ export interface CompactionManagerOptions {
   readonly keepRecentToolGroups?: number;
 }
 
-// 管理器按字节预算决定持久化、摘要、微压缩或 snip 压缩，原始历史不在此改写。
+// The manager decides persistence, summary, micro-compaction, or snip compaction by byte budget; raw history is not rewritten here.
 export class CompactionManager {
   readonly #workspace: string;
   readonly #summarizer: HistorySummarizer;
@@ -208,13 +208,13 @@ export class CompactionManager {
   readonly #snipMaxGroups: number;
   readonly #snipKeepHeadGroups: number;
   readonly #keepRecentToolGroups: number;
-  // prepare 的缓存仅针对最近 canonical 快照；canonical history 始终由调用方持有。
+  // Cache for prepare only targets the latest canonical snapshot; caller always holds canonical history.
   #preparedSource: readonly ChatMessage[] | undefined;
-  // 与 #preparedSource 对应的请求级压缩结果，可在纯追加时增量复用。
+  // Request-level compaction result corresponding to #preparedSource; can be reused incrementally on append-only changes.
   #preparedHistory: readonly ChatMessage[] | undefined;
 
   constructor(options: CompactionManagerOptions) {
-    // 构造期统一解析默认值和校验参数，后续 prepare/compact 不再重复解释配置。
+    // Centrally resolve defaults and validate parameters at construction so subsequent prepare/compact calls do not re-parse configuration.
     const persistThresholdBytes = optionValue(
       options.persistThresholdBytes,
       DEFAULT_PERSIST_THRESHOLD_BYTES,
@@ -277,9 +277,9 @@ export class CompactionManager {
 
   async prepare(history: readonly ChatMessage[]): Promise<readonly ChatMessage[]> {
     const { snapshot } = validatedGroups(history);
-    // 相同 canonical 快照直接复用上次请求历史；纯追加时只压缩新增后缀。
-    // 请求级压缩入口：先从 canonical history 取不可变快照，再按 snip -> micro -> summary
-    // 顺序准备下一次模型输入。canonical history 本身永远不会被这个函数改写。
+    // Identical canonical snapshots directly reuse the previous request history; append-only operations only compact new suffixes.
+    // Request-level compaction entry: take an immutable snapshot from canonical history first, then proceed via snip -> micro -> summary
+    // Sequentially prepares the next model input. The canonical history itself is never rewritten by this function.
     const cachedSource = this.#preparedSource;
     const cachedHistory = this.#preparedHistory;
     if (
@@ -308,7 +308,7 @@ export class CompactionManager {
       keepRecentToolGroups: this.#keepRecentToolGroups,
     });
     if (historyUtf8Bytes(prepared) > this.#proactiveThresholdBytes) {
-      // transcript 永远来自 canonical；摘要只读取便宜层处理后的 request history。
+      // transcript always comes from canonical; summary reads only request history processed by cheaper layers.
       const outcome = await this.#compactValidated(snapshot, prepared, 0, undefined, false);
       prepared = outcome.history;
     }
@@ -319,15 +319,15 @@ export class CompactionManager {
   }
 
   async compactToolResults(results: readonly ToolResult[]): Promise<ToolResultBudgetOutcome> {
-    // 工具结果处理器：在整轮 ToolResult 回填 canonical history 前完成落盘。
-    // 接收的是同一轮全部结果，因此可以按总预算做“最大优先”批次选择，而不是逐条独立判断。
+    // Tool result handlers: finish persisting to disk before the entire turn of ToolResults backfills canonical history.
+    // Receives all results of the same turn, allowing largest-first batch selection against the total budget instead of evaluating items independently.
     if (!Array.isArray(results) || !results.every((result: unknown) => isToolResult(result))) {
       throw new TypeError("results must contain only ToolResult values");
     }
     const snapshot = Object.freeze(results.map((result) => copyToolResult(result)));
     const encoded = snapshot.map((result) => Buffer.from(result.content, "utf8"));
     const sizes = encoded.map((content) => content.byteLength);
-    // 超出 batch 预算时按大小优先落盘，直到剩余结果进入预算。
+    // Flush to disk prioritized by size when exceeding batch budget, until remaining results fit within budget.
     const ranked = sizes
       .map((_size, index) => index)
       .sort((left, right) => {
@@ -363,8 +363,8 @@ export class CompactionManager {
     const transformed = [...snapshot];
     const artifacts: ToolResultArtifact[] = [];
     try {
-      // 先完成整批落盘，任一失败都由下面的 cleanup 撤销本次已发布文件。
-      // 整批先落盘，任一失败都由 cleanup 撤销本次已发布文件。
+      // Completes persistence for the entire batch first; cleanup below revokes published files of this batch on any failure.
+      // Persist the entire batch to disk first. If any fails, cleanup revokes all published files for this batch.
       for (const index of ranked) {
         if (!selected.has(index)) {
           continue;
@@ -404,7 +404,7 @@ export class CompactionManager {
     history: readonly ChatMessage[],
     signal?: AbortSignal,
   ): Promise<HistoryCompactionOutcome> {
-    // 显式压缩 API 不经过 snip/micro，直接保存完整 transcript 并生成结构化摘要。
+    // The explicit compaction API bypasses snip/micro, saves the full transcript directly, and generates a structured summary.
     const { snapshot } = validatedGroups(history);
     return this.#compactValidated(snapshot, snapshot, 0, signal, false);
   }
@@ -414,9 +414,9 @@ export class CompactionManager {
     options: { readonly retryCount: number },
     signal?: AbortSignal,
   ): Promise<HistoryCompactionOutcome> {
-    // 响应式压缩只在同一逻辑请求中允许一次；retryCount 形成递归保护。
-    // 响应式恢复原语：调用者已经确认输入上下文过长，本方法只允许当前窗口压缩一次。
-    // 摘要后保留最近完整组，让模型仍有最新进展可看，而不是只剩一条压缩摘要。
+    // Reactive compaction is allowed only once per logical request; retryCount provides recursion protection.
+    // Reactive recovery primitive: the caller confirmed input context is too long; this method allows only one compaction in the current window.
+    // Retain the latest complete group after summarization so the model still sees recent progress instead of only a compacted summary.
     requireNonNegativeInteger("retryCount", options.retryCount);
     if (options.retryCount > 0) {
       throw new PromptTooLongRetryError("prompt-too-long compaction was already attempted");
@@ -432,10 +432,10 @@ export class CompactionManager {
     signal: AbortSignal | undefined,
     cleanupOnFailure: boolean,
   ): Promise<HistoryCompactionOutcome> {
-    // transcript 先落盘；响应式模式在取消或摘要失败时清理已发布 artifact。
-    // 先保存完整 transcript；摘要失败时也不丢失进入压缩前的会话快照。
-    // transcript 与摘要使用不同历史来源：transcript 永远来自完整 canonical 快照，
-    // 摘要只读便宜层处理后的 request history。先保存 transcript，摘要失败时也能保留现场。
+    // Write transcript to disk first; reactive mode cleans up published artifacts on cancellation or summary failure.
+    // Saves complete transcript first; does not lose session snapshot prior to compaction even if summary fails.
+    // transcript and summary use different history sources: transcript always comes from full canonical snapshots,
+    // The summary only reads request history processed by cheaper layers. Save transcript first to preserve context if summarization fails.
     const transcript = await this.#writeArtifact(
       "transcript",
       ".jsonl",
@@ -469,8 +469,8 @@ export class CompactionManager {
     extension: ".txt" | ".jsonl",
     content: Buffer,
   ): Promise<ArtifactReference> {
-    // artifact ID 受 slug 约束，最终路径只落在 workspace 的固定 artifacts 目录。
-    // 统一写入入口：校验 ID slug，创建安全目录，再用独占发布生成最终文件。
+    // The artifact ID is constrained by slug; the final path stays only in the fixed artifacts directory of the workspace.
+    // Unified write entry point: validate ID slug, create secure directory, then publish exclusively to generate the final file.
     const artifactId: unknown = this.#idGenerator();
     if (
       typeof artifactId !== "string" ||
@@ -500,7 +500,7 @@ export class CompactionManager {
     return Object.freeze({ path, relativePath, originalBytes: content.byteLength });
   }
 
-  // 消息只保留相对路径、原始大小和有界 UTF-8 预览，完整正文留在 artifact。
+  // Messages retain only relative paths, original sizes, and bounded UTF-8 previews; the full body stays in the artifact.
   #renderToolResultReference(reference: ArtifactReference, content: Buffer): string {
     const [head, tail] = boundedUtf8Preview(
       content,
@@ -520,7 +520,7 @@ export class CompactionManager {
   }
 }
 
-// micro 以完整工具组为单位替换旧结果正文，保留 assistant 调用与 tool_call_id 配对。
+// micro replaces old result bodies by complete tool group, preserving assistant call and tool_call_id pairings.
 export function microCompactHistory(
   history: readonly ChatMessage[],
   options: { readonly keepRecentToolGroups?: number } = {},
@@ -561,7 +561,7 @@ export function microCompactHistory(
   return compacted;
 }
 
-// snip 以消息组为单位保留头尾并插入省略标记，避免拆开多调用原子组。
+// snip preserves head and tail by message group and inserts omission markers to avoid splitting multi-call atomic groups.
 export function snipCompactHistory(
   history: readonly ChatMessage[],
   options: { readonly maxGroups?: number; readonly keepHeadGroups?: number } = {},
@@ -588,14 +588,14 @@ export function snipCompactHistory(
 }
 
 export function historyUtf8Bytes(history: readonly ChatMessage[]): number {
-  // 预算判断与 transcript 共用同一份规范化 JSONL，避免两种序列化产生不同字节数。
+  // Budget evaluation shares the same normalized JSONL with transcript to prevent two serializations from producing different byte counts.
   const { snapshot } = validatedGroups(history);
   return serializeTranscript(snapshot).byteLength;
 }
 
-// 先把历史切成普通消息组和完整工具交换组，后续所有边界都基于这些组。
+// Splits history into normal message groups and complete tool exchange groups first; all subsequent boundaries are based on these groups.
 function validatedGroups(history: readonly ChatMessage[]): {
-  // assistant 工具调用与其全部 tool result 是不可拆分的 OpenAI 协议组。
+  // The assistant tool call and all its tool results form an indivisible OpenAI protocol group.
   readonly snapshot: readonly ChatMessage[];
   readonly groups: readonly MessageGroup[];
 } {
@@ -636,7 +636,7 @@ function flattenGroups(groups: readonly MessageGroup[]): readonly ChatMessage[] 
   return Object.freeze(groups.flatMap((group) => group.messages));
 }
 
-// transcript 是稳定 JSONL：键排序后序列化，便于后续缓存比较和逐行还原。
+// transcript is stable JSONL: serialized with sorted keys for cache comparison and line-by-line restoration.
 function serializeTranscript(history: readonly ChatMessage[]): Buffer {
   if (history.length === 0) {
     return Buffer.alloc(0);
@@ -646,7 +646,7 @@ function serializeTranscript(history: readonly ChatMessage[]): Buffer {
 }
 
 function toOpenAIMessage(message: ChatMessage): Readonly<Record<string, unknown>> {
-  // 内部 ChatMessage 转 OpenAI wire shape；只保留协议需要的字段，并保留 tool_call_id。
+  // Converts internal ChatMessage to OpenAI wire shape; keeps only fields required by protocol and preserves tool_call_id.
   if (message.role === "system" || message.role === "user") {
     return { role: message.role, content: message.content };
   }
@@ -686,8 +686,8 @@ function sortJson(value: unknown): unknown {
 }
 
 function summaryMessage(summary: CompactionSummary, transcriptPath: string): ChatMessage {
-  // 摘要消息是 system role，包含 kind、transcript_path 和五类继续工作信息；
-  // 模型下一轮可以直接读取这些字段，不需要重新翻阅被压缩的历史。
+  // The summary message has system role and includes kind, transcript_path, and five types of continuation information.
+  // The model can read these fields directly in the next turn without reviewing compacted history.
   return systemMessage(
     stableStringify({
       kind: "compacted_history",
@@ -701,7 +701,7 @@ function summaryMessage(summary: CompactionSummary, transcriptPath: string): Cha
   );
 }
 
-// 摘要模型输出属于不可信边界，字段集合、类型和空值必须严格校验。
+// Summary model output is an untrusted boundary. Strictly validate field sets, types, and empty values.
 function parseCompactionSummary(content: string): CompactionSummary {
   let payload: unknown;
   try {
@@ -758,7 +758,7 @@ function boundedUtf8Preview(
   headLimit: number,
   tailLimit: number,
 ): readonly [string, string] {
-  // 先按 byte 截取头部和尾部，再用 TextDecoder 丢弃边界上的不完整 UTF-8 字符。
+  // Truncates head and tail by bytes first, then uses TextDecoder to discard incomplete UTF-8 characters at boundaries.
   const headEnd = Math.min(content.byteLength, headLimit);
   const tailStart = Math.max(headEnd, content.byteLength - tailLimit);
   return Object.freeze([
@@ -777,14 +777,14 @@ function decodeUtf8Boundary(content: Buffer, boundary: "head" | "tail"): string 
     try {
       return decoder.decode(candidate);
     } catch {
-      // UTF-8 code point最多 4 bytes，只丢弃边界上的不完整片段。
+      // A UTF-8 code point has at most 4 bytes: discard only incomplete fragments on boundaries.
     }
   }
   return "";
 }
 
 async function ensureArtifactDirectory(workspace: string): Promise<string> {
-  // 固定产物根目录，并逐层验证真实路径，避免 .agent_tutorial/artifacts 被链接替换。
+  // Fix artifact root directory and validate real paths layer by layer to prevent .agent_tutorial/artifacts from being replaced by symlinks.
   const stateDirectory = join(workspace, ".agent_tutorial");
   await ensureSafeDirectory(stateDirectory, workspace);
   const artifactDirectory = join(stateDirectory, "artifacts");
@@ -792,7 +792,7 @@ async function ensureArtifactDirectory(workspace: string): Promise<string> {
   return artifactDirectory;
 }
 
-// 创建后重新检查真实目录，拒绝符号链接和指向 workspace 外的路径。
+// Re-checks real directory after creation, rejecting symlinks and paths pointing outside workspace.
 async function ensureSafeDirectory(path: string, workspace: string): Promise<void> {
   try {
     await mkdir(path);
@@ -823,8 +823,8 @@ async function ensureSafeDirectory(path: string, workspace: string): Promise<voi
 }
 
 async function writeExclusiveAtomic(path: string, content: Buffer): Promise<void> {
-  // 使用独占发布防止并发压缩覆盖已有 artifact，冲突交给调用方显式处理。
-  // 同目录临时文件先同步，再用独占硬链接发布，最终路径从不被覆盖。
+  // Uses exclusive publication to prevent concurrent compaction from overwriting existing artifacts, leaving conflicts to callers to handle explicitly.
+  // Sync temporary files in the same directory before publishing via exclusive hard links; final paths are never overwritten.
   const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
   try {
@@ -849,7 +849,7 @@ async function removeCreatedArtifacts(
   references: readonly ArtifactReference[],
   originalError: unknown,
 ): Promise<never> {
-  // 批量清理即使中途失败也会继续，最后合并原始错误与清理错误。
+  // Batch cleanup continues even if it fails halfway, finally merging original errors with cleanup errors.
   const cleanupErrors: unknown[] = [];
   for (const reference of references) {
     try {
@@ -872,7 +872,7 @@ function resolveWorkspace(workspace: string): string {
     throw new TypeError("workspace must be a non-empty string");
   }
   try {
-    // 组合根创建 manager 时解析一次；请求路径只使用已验证的绝对 workspace。
+    // The composition root resolves once when creating the manager; request paths only use the validated absolute workspace.
     const resolvedWorkspace = realpathSync.native(workspace);
     if (!statSync(resolvedWorkspace).isDirectory()) {
       throw new ArtifactPathError(`workspace is not a directory: ${workspace}`);
@@ -887,7 +887,7 @@ function resolveWorkspace(workspace: string): string {
 }
 
 function isWithinWorkspace(workspace: string, candidate: string): boolean {
-  // 用相对路径判断包含关系，避免字符串前缀误判 C:\a 与 C:\ab。
+  // Use relative paths to check containment, avoiding false matches from string prefixes between C:\a and C:\ab.
   const offset = relative(workspace, candidate);
   return (
     offset === "" || (!offset.startsWith(`..${sep}`) && offset !== ".." && !isAbsolute(offset))
@@ -898,7 +898,7 @@ function historiesEqual(left: readonly ChatMessage[], right: readonly ChatMessag
   return left.length === right.length && historyStartsWith(left, right);
 }
 
-// 前缀比较同样使用稳定 JSON，确保跨字段顺序仍可识别纯追加历史。
+// Prefix comparison also uses stable JSON to ensure cross-field ordering can still identify append-only history.
 function historyStartsWith(
   history: readonly ChatMessage[],
   prefix: readonly ChatMessage[],
@@ -916,7 +916,7 @@ function historyStartsWith(
 }
 
 function optionValue(value: number | undefined, fallback: number): number {
-  // 配置项未显式传入时使用模块默认值；显式传入的非法值继续走 require 校验。
+  // Uses module defaults when configuration options are not explicitly passed; explicitly passed invalid values proceed to require validation.
   return value === undefined ? fallback : value;
 }
 
@@ -927,7 +927,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 function requireNonEmptyText(name: string, value: unknown): string {
-  // 摘要字段拒绝空字符串，避免模型用占位符掩盖缺失信息。
+  // Summary fields reject empty strings to prevent the model from using placeholders to hide missing information.
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new TypeError(`${name} must be a non-empty string`);
   }
@@ -935,7 +935,7 @@ function requireNonEmptyText(name: string, value: unknown): string {
 }
 
 function requireTextArray(name: string, value: readonly string[]): readonly string[] {
-  // 字符串数组中的每一项都必须非空，冻结后作为不可变摘要状态。
+  // Each item in the string array must be non-empty and frozen as immutable summary state.
   if (
     !Array.isArray(value) ||
     !value.every((item: unknown) => typeof item === "string" && item.trim().length > 0)
@@ -946,21 +946,21 @@ function requireTextArray(name: string, value: readonly string[]): readonly stri
 }
 
 function requirePositiveInteger(name: string, value: number): void {
-  // 预算必须为正整数，防止 0 或小数造成无意义的阈值。
+  // Budget must be a positive integer to prevent 0 or decimals from causing meaningless thresholds.
   if (!Number.isInteger(value) || value <= 0) {
     throw new RangeError(`${name} must be a positive integer`);
   }
 }
 
 function requireNonNegativeInteger(name: string, value: number): void {
-  // 允许 0 的配置（例如预览字节或保留组数）也必须仍是整数。
+  // Configurations that allow 0 (such as preview bytes or retained groups) must still be integers.
   if (!Number.isInteger(value) || value < 0) {
     throw new RangeError(`${name} must be a non-negative integer`);
   }
 }
 
 function validateSnipConfiguration(maxGroups: number, keepHeadGroups: number): void {
-  // snip 需要至少容纳 head、marker 和 tail 三部分，避免切出空历史。
+  // snip must accommodate at least head, marker, and tail parts to avoid slicing into empty history.
   requirePositiveInteger("maxGroups", maxGroups);
   requirePositiveInteger("keepHeadGroups", keepHeadGroups);
   if (maxGroups < 3) {
@@ -972,6 +972,6 @@ function validateSnipConfiguration(maxGroups: number, keepHeadGroups: number): v
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  // 只把带 code 字段的 Error 当作 Node 系统错误，用于识别 EEXIST 等写入结果。
+  // Treat only Errors with a code field as Node system errors to identify write results like EEXIST.
   return error instanceof Error && "code" in error;
 }

@@ -1,5 +1,5 @@
-// Node.js 文件系统 adapter：将平台能力归一为 WorkspaceFileSystem 接口。
-// 路径安全通过 safePath 校验，拒绝绝对路径、盘符、上级目录和符号链接越界。
+// Node.js file system adapter: normalizes platform capabilities into the WorkspaceFileSystem interface.
+// Path safety is verified via safePath, rejecting absolute paths, drive letters, parent directories, and symlink out-of-bounds.
 import {
   lstat,
   mkdir,
@@ -23,7 +23,7 @@ import {
 } from "../core/filesystem.js";
 import type { WorkspaceFileSystem } from "../core/filesystem.js";
 
-// Windows 设备名不能作为普通路径组件，即使其带有扩展名。
+// Windows device names cannot serve as normal path components, even with extensions.
 const WINDOWS_DEVICE_NAMES = new Set(["AUX", "CLOCK$", "CON", "CONIN$", "CONOUT$", "NUL", "PRN"]);
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -35,10 +35,10 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-// Node.js 文件系统 adapter：将平台能力归一为 WorkspaceFileSystem 接口。
-// 路径一律从工作区相对路径进入；错误统一归一为 core 可映射的领域错误。
+// Node.js file system adapter: normalizes platform capabilities into the WorkspaceFileSystem interface.
+// Paths always enter from workspace-relative paths; errors normalize uniformly to domain errors mappable by core.
 function translateFileSystemError(error: unknown): Error {
-  // Adapter 将平台 errno 收敛成 core 可稳定映射给模型的领域错误。
+  // Adapter converges platform errno into domain errors that core can stably map for the model.
   if (
     error instanceof WorkspacePathError ||
     error instanceof TextNotFoundError ||
@@ -63,9 +63,9 @@ function translateFileSystemError(error: unknown): Error {
   return new FileSystemOperationError("File system operation failed");
 }
 
-// 所有路径以相对路径进入，先在词法层拒绝盘符、绝对路径和上级目录。
+// All paths enter as relative paths, rejecting drive letters, absolute paths, and parent directories at lexical analysis first.
 function isInside(root: string, candidate: string): boolean {
-  // 相对路径为空表示 candidate 就是 root；其余必须以 .. 之外的非绝对子路径开头。
+  // An empty relative path indicates that candidate is root; others must start with a non-absolute subpath other than ..
   const child = relative(root, candidate);
   return (
     child.length === 0 || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
@@ -73,7 +73,7 @@ function isInside(root: string, candidate: string): boolean {
 }
 
 function isWindowsReservedComponent(component: string): boolean {
-  // 尾部空格/点、控制字符和 Windows 路径特殊字符都不允许出现在普通文件组件中。
+  // Trailing spaces/dots, control characters, and Windows path special characters are not permitted in normal file components.
   if (component.endsWith(" ") || component.endsWith(".")) {
     return true;
   }
@@ -100,7 +100,7 @@ function isWindowsReservedComponent(component: string): boolean {
 }
 
 function relativeParts(value: string, label: string, allowWildcards: boolean): string[] {
-  // 所有路径以相对路径进入，先在词法层拒绝盘符、绝对路径和上级目录。
+  // All paths enter as relative paths, rejecting drive letters, absolute paths, and parent directories at lexical analysis first.
   if (value.length === 0) {
     throw new WorkspacePathError(`${label} must not be empty`);
   }
@@ -139,7 +139,7 @@ function relativeParts(value: string, label: string, allowWildcards: boolean): s
 }
 
 async function workspaceRoot(workspace: string): Promise<string> {
-  // realpath 先解析工作区自身，后续 safePath 都基于真实根目录计算边界。
+  // realpath resolves the workspace itself first; subsequent safePath calls compute boundaries against the real root directory.
   const root = await realpath(workspace);
   const information = await stat(root);
   if (!information.isDirectory()) {
@@ -152,7 +152,7 @@ async function resolvedExistingParent(
   root: string,
   target: string,
 ): Promise<{ physical: string; lexical: string }> {
-  // 从目标逐级向上找已存在父路径，真实解析后再拼接不存在的尾部，防止符号链接逃逸。
+  // Traverses upward from target to find existing parent path, resolves real path, then appends non-existent tail to prevent symlink escape.
   let current = target;
   while (true) {
     try {
@@ -169,13 +169,13 @@ async function resolvedExistingParent(
 export async function safePath(workspace: string, relativePath: string): Promise<string> {
   try {
     const root = await workspaceRoot(workspace);
-    // 先做词法检查，拒绝绝对路径、..、Windows 保留名和非法字符。
+    // Performs lexical checks first, rejecting absolute paths, .., Windows reserved names, and illegal characters.
     const parts = relativeParts(relativePath, "path", false);
     const target = resolve(root, ...parts);
     if (!isInside(root, target)) {
       throw new WorkspacePathError(`Path escapes workspace: ${relativePath}`);
     }
-    // 现有父路径必须解析真实位置，防止 junction 或符号链接把目标带出工作区。
+    // Existing parent paths must resolve to real locations to prevent junctions or symlinks from escaping the workspace.
     const existing = await resolvedExistingParent(root, target);
     const resolved = resolve(existing.physical, relative(existing.lexical, target));
     if (!isInside(root, resolved)) {
@@ -206,9 +206,9 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-// 仅实现工具契约需要的 *, **, ? 和字符类，不将未验证模式交给 Shell。
+// Implements only *, **, ?, and character classes required by the tool contract, without passing unvalidated patterns to Shell.
 function globRegex(pattern: string): RegExp {
-  // 仅实现工具契约需要的 *, **, ? 和字符类，不将未验证模式交给 Shell。
+  // Implements only *, **, ?, and character classes required by the tool contract, without passing unvalidated patterns to Shell.
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index];
@@ -279,7 +279,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
       const text = decodeUtf8(await readFileBytes(target), relativePath);
       const lines = splitLines(text);
       if (limit !== undefined && limit < lines.length) {
-        // 截断提示保留总行数，调用方可决定是否继续读取。
+        // Truncation notices retain total line counts; callers can decide whether to continue reading.
         return [...lines.slice(0, limit), `... (${lines.length - limit} more lines)`].join("\n");
       }
       return lines.join("\n");
@@ -317,7 +317,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
       if (index === -1) {
         throw new TextNotFoundError(`Exact text not found in ${relativePath}`);
       }
-      // 只替换首次精确匹配，避免模型提出的编辑意外影响多个位置。
+      // Replace only the first exact match to prevent edits proposed by the model from affecting multiple locations.
       const updated = `${current.slice(0, index)}${newText}${current.slice(index + oldText.length)}`;
       await writeFileBytes(target, Buffer.from(updated, "utf8"));
     } catch (error) {
@@ -350,7 +350,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
       }
       const results: string[] = [];
       const pending = [start];
-      // Dirent.isDirectory() 不会跟随符号链接目录，避免递归越界和链接环。
+      // Dirent.isDirectory() does not follow symlink directories to avoid recursive traversal out of bounds and symlink loops.
       while (pending.length > 0) {
         const directory = pending.pop();
         if (directory === undefined) {

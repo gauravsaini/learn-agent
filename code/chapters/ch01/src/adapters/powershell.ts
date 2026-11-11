@@ -1,34 +1,34 @@
 import { spawn } from "node:child_process";
 import type { CommandResult, CommandRunner } from "../core/commands.js";
 
-// PowerShell 命令适配器：把字符串命令转换为受限子进程执行，并统一收集输出。
+// PowerShell command adapter: converts string commands into restricted child process execution and collects output uniformly.
 //
-// 显式 NoLogo / NoProfile / NonInteractive 参数保证纯脚本执行，不加载用户配置；
-// 默认 120 秒超时和 50000 字符输出上限，防止单条命令耗尽运行资源或淹没上下文。
-// 参数数组传递避免再次经过 shell 解析，UTF-8 编码让 stdout/stderr 可一致解码。
+// Explicit NoLogo, NoProfile, and NonInteractive parameters guarantee clean script execution without loading user configuration.
+// Default 120-second timeout and 50,000-character output limit to prevent a single command from exhausting runtime resources or flooding context.
+// Passing argument arrays avoids re-parsing by the shell; UTF-8 encoding decodes stdout and stderr consistently.
 //
-// PowerShell 进程边界：统一 UTF-8、超时和输出上限，避免单次命令耗尽运行资源。
+// PowerShell process boundary: unifies UTF-8, timeout, and output caps to prevent a single command from exhausting runtime resources.
 export interface PowerShellRunnerOptions {
-  // 可替换的进程可执行文件路径，主要用于测试或受控部署环境。
+  // Replaceable process executable path, primarily used for tests or controlled deployment environments.
   readonly executable?: string;
-  // 每条命令的默认时间预算，调用时可单独覆盖。
+  // Default time budget for each command, individually overridable during calls.
   readonly timeoutMs?: number;
-  // stdout 与 stderr 合并后的字符上限，防止结果淹没 Agent 上下文。
+  // Character ceiling for merged stdout and stderr to prevent results flooding Agent context.
   readonly outputLimit?: number;
 }
 
-// Node 子进程版 CommandRunner，负责将受控 PowerShell 执行结果统一收集。
+// Node child process CommandRunner collects controlled PowerShell execution results uniformly.
 export class PowerShellRunner implements CommandRunner {
-  // 实际启动的 PowerShell 程序名或绝对路径。
+  // Actual launched PowerShell program name or absolute path.
   readonly #executable: string;
-  // 未显式覆盖时使用的单次命令超时。
+  // Single command timeout used when not explicitly overridden.
   readonly #timeoutMs: number;
-  // 两个输出流共享的最大字符数。
+  // Maximum characters shared across both output streams.
   readonly #outputLimit: number;
 
-  // 初始化执行限制并在启动进程前拒绝无效预算。
+  // Initialize execution limits and reject invalid budgets before starting the process.
   constructor(options: PowerShellRunnerOptions = {}) {
-    // 运行限制可为测试替换；生产默认值限制单次命令时间和返回体积。
+    // Runtime limits can be replaced for tests; production defaults limit single command time and response size.
     this.#executable = options.executable === undefined ? "powershell.exe" : options.executable;
     this.#timeoutMs = options.timeoutMs === undefined ? 120_000 : options.timeoutMs;
     this.#outputLimit = options.outputLimit === undefined ? 50_000 : options.outputLimit;
@@ -40,9 +40,9 @@ export class PowerShellRunner implements CommandRunner {
     }
   }
 
-  // 启动非交互 PowerShell，并把退出、超时和截断状态收敛为 CommandResult。
+  // Launch non-interactive PowerShell, converging exit, timeout, and truncation states into a CommandResult.
   run(command: string, cwd: string, timeoutOverrideMs?: number): Promise<CommandResult> {
-    // 每次调用可缩短或延长预算，但仍要求正整数以保证计时器语义明确。
+    // Calls can shorten or extend budgets, but still require positive integers to maintain explicit timer semantics.
     if (command.length === 0) {
       throw new Error("command must not be empty");
     }
@@ -52,7 +52,7 @@ export class PowerShellRunner implements CommandRunner {
     }
 
     return new Promise((resolve, reject) => {
-      // 参数数组避免经由 shell 再次解析；显式 UTF-8 使 stdout/stderr 可一致解码。
+      // Argument arrays avoid re-parsing through the shell; explicit UTF-8 decodes stdout and stderr consistently.
       const child = spawn(
         this.#executable,
         [
@@ -70,9 +70,9 @@ export class PowerShellRunner implements CommandRunner {
       let timedOut = false;
       let settled = false;
 
-      // 两个输出流共用一个上限，保留最早的内容并记录截断状态。
+      // Both output streams share a single limit, keeping earliest content and recording truncation state.
       const append = (chunk: Buffer): void => {
-        // stdout 与 stderr 共享同一预算，保证错误输出也不能绕过结果上限。
+        // stdout and stderr share the same budget to ensure error outputs cannot bypass result limits.
         if (outputLength >= this.#outputLimit) {
           truncated = true;
           return;
@@ -88,7 +88,7 @@ export class PowerShellRunner implements CommandRunner {
 
       child.stdout.on("data", append);
       child.stderr.on("data", append);
-      // error 与 close 可能先后到达；settled 确保 Promise 只兑现一次。
+      // error and close can arrive out of order; settled ensures the Promise resolves only once.
       child.once("error", (error) => {
         if (settled) {
           return;
@@ -113,7 +113,7 @@ export class PowerShellRunner implements CommandRunner {
         );
       });
 
-      // 超时只终止子进程；close 负责收集最终退出码并返回 timedOut 标记。
+      // Timeouts only terminate child processes; close collects final exit codes and returns the timedOut flag.
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill();

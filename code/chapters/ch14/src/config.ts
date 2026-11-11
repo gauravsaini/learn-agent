@@ -2,13 +2,13 @@ import { readFileSync } from "node:fs";
 
 import { parse } from "dotenv";
 
-// 三个字段是网络客户端创建前的硬性前置条件，缺失时不会生成半成品客户端。
-// 文件职责：集中加载和校验 OpenAI 兼容设置。任何缺失、空白或非法 URL 都必须在创建网络客户端前
-// 失败，不能把未经验证的配置传递给 SDK、恢复层或后续调用方。
-// 基础模型配置；后续章节可显式要求备用模型。
+// Three fields are hard prerequisites before network client creation; missing fields prevent generating an incomplete client.
+// File responsibility: centrally load and validate OpenAI-compatible settings. Catch missing, blank, or invalid URLs before creating the network client.
+// Fail, cannot pass unvalidated configurations to SDK, recovery layer, or subsequent callers.
+// Base model configuration; subsequent chapters can explicitly require fallback models.
 const requiredFields = ["OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"] as const;
 
-// 配置错误保留全部缺失字段，便于调用方一次性修复，而不是逐个字段报错。
+// Configuration errors retain all missing fields, allowing callers to fix them at once rather than reporting field by field.
 export class ConfigurationError extends Error {
   override readonly name = "ConfigurationError";
   readonly missingFields: readonly string[];
@@ -19,7 +19,7 @@ export class ConfigurationError extends Error {
   }
 }
 
-// 校验后的配置快照：baseUrl 已确认可解析且为 http/https，字段都已 trim，对象不可改写。
+// Validated configuration snapshot: baseUrl is resolvable http/https, fields are trimmed, and the object is immutable.
 export interface OpenAISettings {
   readonly baseUrl: string;
   readonly apiKey: string;
@@ -27,14 +27,14 @@ export interface OpenAISettings {
   readonly fallbackModel?: string;
 }
 
-// 从任意 mapping 构造配置。mapping 允许值是 string | undefined，因此这里必须显式验证空白、
-// URL 协议和冻结结果，不能假设调用方已经清洗过环境变量。
+// Constructs configuration from any mapping. Values in mapping can be string | undefined, so this must explicitly validate whitespace,
+// URL protocol and frozen results: do not assume the caller cleaned environment variables.
 export function settingsFromMapping(
   mapping: Readonly<Record<string, string | undefined>>,
   requireFallback = false,
 ): OpenAISettings {
   const fields = requireFallback ? [...requiredFields, "OPENAI_FALLBACK_MODEL"] : requiredFields;
-  // 先收集全部缺失字段，避免用户修复一个字段后才发现下一个字段。
+  // Collects all missing fields first to prevent users from fixing one field only to discover the next.
   const missing = fields.filter((field) => {
     const value = mapping[field];
     return value === undefined || value.trim().length === 0;
@@ -51,7 +51,7 @@ export function settingsFromMapping(
   }
   let parsedBaseUrl: URL;
   try {
-    // 先用 URL 解析，再单独检查协议；SDK 可能接受部分非 HTTP URL，但 Agent 配置不允许 file/data 等协议。
+    // Parses with URL first, then checks protocol separately; SDK might accept non-HTTP URLs, but Agent configuration forbids file/data protocols.
     parsedBaseUrl = new URL(baseUrl.trim());
   } catch (error) {
     throw new ConfigurationError(["OPENAI_BASE_URL"], { cause: error });
@@ -60,8 +60,8 @@ export function settingsFromMapping(
     throw new ConfigurationError(["OPENAI_BASE_URL"]);
   }
   const fallbackModel = mapping.OPENAI_FALLBACK_MODEL;
-  // 返回冻结快照，防止配置在运行中被调用方重写。
-  // 返回冻结快照，防止配置在运行中被调用方重写；所有值都 trim，避免首尾空白进入网络请求。
+  // Returns a frozen snapshot to prevent configuration from being overwritten by callers during execution.
+  // Returns a frozen snapshot to prevent configuration from being overwritten by callers during execution; trims all values to avoid leading or trailing whitespace in network requests.
   return Object.freeze({
     baseUrl: baseUrl.trim(),
     apiKey: apiKey.trim(),

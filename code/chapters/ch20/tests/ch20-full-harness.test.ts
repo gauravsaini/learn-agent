@@ -138,7 +138,7 @@ class HarnessModel implements ModelClient {
     if (request.tools.length === 0) {
       const system = requireSystemPrompt(request);
       return {
-        message: assistantMessage(system.includes("选择与查询") ? '["full-harness"]' : "[]"),
+        message: assistantMessage(system.includes("related to query") ? '["full-harness"]' : "[]"),
         finishReason: "stop",
       };
     }
@@ -169,12 +169,12 @@ class DagModel implements ModelClient {
     this.requests.push(request);
     if (request.tools.length === 0) {
       const system = requireSystemPrompt(request);
-      if (system.includes("请将当前 Agent 历史压缩")) {
+      if (system.includes("Compress the current Agent history")) {
         return {
           message: assistantMessage(
             JSON.stringify({
-              current_goal: "验证完整 Harness",
-              key_findings: ["大 MCP 结果已落盘"],
+              current_goal: "Verify Full Harness",
+              key_findings: ["Large MCP result persisted to disk"],
               files_read_or_changed: [],
               remaining_work: [],
               user_constraints: [],
@@ -183,7 +183,7 @@ class DagModel implements ModelClient {
           finishReason: "stop",
         };
       }
-      if (system.includes("选择与查询")) {
+      if (system.includes("related to query")) {
         return { message: assistantMessage('["full-harness"]'), finishReason: "stop" };
       }
       return { message: assistantMessage("[]"), finishReason: "stop" };
@@ -213,20 +213,20 @@ class DagModel implements ModelClient {
             "todo_write",
             JSON.stringify({
               todos: [
-                { content: "完成 A", status: "in_progress" },
-                { content: "等待 A 后完成 B", status: "pending" },
+                { content: "Complete A", status: "in_progress" },
+                { content: "Wait for A then complete B", status: "pending" },
               ],
             }),
           ),
           toolCall(
             "task-a-dag",
             "create_task",
-            JSON.stringify({ subject: "A", description: "先完成 A" }),
+            JSON.stringify({ subject: "A", description: "Complete A first" }),
           ),
           toolCall(
             "task-b-dag",
             "create_task",
-            JSON.stringify({ subject: "B", description: "依赖 A", blocked_by: [TASK_A] }),
+            JSON.stringify({ subject: "B", description: "Depends on A", blocked_by: [TASK_A] }),
           ),
         ]),
         finishReason: "tool_calls",
@@ -302,7 +302,11 @@ class GateModel implements ModelClient {
         this.#planSubmitted = true;
         return {
           message: assistantMessage(null, [
-            toolCall("worker-plan", "submit_plan", '{"plan":"完成 B 并写入绑定 Worktree"}'),
+            toolCall(
+              "worker-plan",
+              "submit_plan",
+              '{"plan":"Complete B and write to bound Worktree"}',
+            ),
             toolCall(
               "blocked-write",
               "write_file",
@@ -445,8 +449,8 @@ class RecoveryHarnessModel implements ModelClient {
       return {
         message: assistantMessage(
           JSON.stringify({
-            current_goal: "完成恢复测试",
-            key_findings: ["prompt-too-long 已触发一次摘要"],
+            current_goal: "Complete recovery test",
+            key_findings: ["prompt-too-long triggered summary once"],
             files_read_or_changed: [],
             remaining_work: [],
             user_constraints: [],
@@ -590,15 +594,15 @@ async function writeContextSources(root: string): Promise<void> {
   await mkdir(skill, { recursive: true });
   await writeFile(
     join(skill, "SKILL.md"),
-    '---\nname: "harness-skill"\ndescription: "完整 Harness Skill"\n---\n# Private body\n',
+    '---\nname: "harness-skill"\ndescription: "Complete Harness Skill"\n---\n# Private body\n',
     "utf8",
   );
   await new MemoryStore({ workspace: root, idGenerator: () => "seed" }).add(
     new MemoryRecord({
       name: "full-harness",
-      description: "完整组合规则",
+      description: "Complete composition rules",
       kind: MemoryType.PROJECT,
-      body: "P20 必须复用单一 AgentRunner。",
+      body: "P20 must reuse a single AgentRunner.",
     }),
   );
 }
@@ -764,7 +768,7 @@ describe("chapter 20 full harness", () => {
     traceClose(supervisor, "supervisor", closeOrder);
 
     try {
-      const result = await runner.run("验证完整 Harness");
+      const result = await runner.run("Verify Full Harness");
       const mainRequests = model.requests.filter((request) => request.tools.length > 0);
       const initialRequest = requireRequest(mainRequests[0]);
       const nextRequest = requireRequest(mainRequests[1]);
@@ -779,8 +783,8 @@ describe("chapter 20 full harness", () => {
       expect(toolNames(initialRequest)).not.toContain("mcp__fake__lookup");
       expect(toolNames(nextRequest)).toContain("mcp__fake__lookup");
       expect(initialPrompt).toContain("harness-skill");
-      expect(initialPrompt).toContain("完整 Harness Skill");
-      expect(initialPrompt).toContain("P20 必须复用单一 AgentRunner。");
+      expect(initialPrompt).toContain("Complete Harness Skill");
+      expect(initialPrompt).toContain("P20 must reuse a single AgentRunner.");
       expect(initialPrompt).toContain(
         '## runtime_status\n{"mcp_connections":[],"pending_work":false}',
       );
@@ -827,7 +831,7 @@ describe("chapter 20 full harness", () => {
     const runner = buildAgent(P20, harness.dependencies);
 
     try {
-      const result = await runner.run("验证 DAG 和大结果");
+      const result = await runner.run("Verify DAG and large results");
       const mainRequests = model.requests.filter((request) => request.tools.length > 0);
       const largeResult = result.history.find(
         (message) => message.role === "tool" && message.toolCallId === "large-dag",
@@ -858,8 +862,8 @@ describe("chapter 20 full harness", () => {
       expect(artifact).toContain(LARGE_MCP_TEXT);
       expect(await readdir(join(root, ".agent_tutorial", "artifacts"))).toHaveLength(1);
       expect(todoPayload.todos).toEqual([
-        { content: "完成 A", status: "in_progress" },
-        { content: "等待 A 后完成 B", status: "pending" },
+        { content: "Complete A", status: "in_progress" },
+        { content: "Wait for A then complete B", status: "pending" },
       ]);
       expect(tasks.map((task) => task.id)).toEqual([TASK_A, TASK_B]);
       expect(taskB.status).toBe(TaskStatus.PENDING);
@@ -887,7 +891,7 @@ describe("chapter 20 full harness", () => {
     const runner = buildAgent(P20, harness.dependencies);
 
     try {
-      const result = await runner.run("启动后台任务");
+      const result = await runner.run("Start background task");
       expect(result.finalText).toBe("background event handled");
       expect(commandRunner.commands).toEqual(["npm install"]);
       const placeholder = result.history.find(
@@ -898,7 +902,7 @@ describe("chapter 20 full harness", () => {
       const scheduledAt = harness.clock.now();
       const job = await harness.cronStore.scheduleCron({
         cron: "* * * * *",
-        prompt: "检查 CI",
+        prompt: "Check CI",
         timezone: "UTC",
         recurring: false,
         durable: true,
@@ -944,7 +948,7 @@ describe("chapter 20 full harness", () => {
     });
 
     try {
-      const result = await runner.run("验证恢复边界");
+      const result = await runner.run("Verify recovery boundary");
       const mainRequests = model.requests.filter((request) => request.tools.length > 0);
       const summaryRequests = model.requests.filter((request) => request.tools.length === 0);
       const transcriptFiles = (await readdir(join(root, ".agent_tutorial", "artifacts"))).filter(
@@ -970,7 +974,9 @@ describe("chapter 20 full harness", () => {
       expect(
         summaryRequests.filter((request) =>
           request.messages.some(
-            (message) => message.role === "system" && message.content.includes("历史压缩"),
+            (message) =>
+              message.role === "system" &&
+              message.content.includes("Compress the current Agent history"),
           ),
         ),
       ).toHaveLength(1);
@@ -979,11 +985,14 @@ describe("chapter 20 full harness", () => {
           (message) =>
             message.role === "assistant" &&
             message.content !== null &&
-            message.content.includes("prompt-too-long 已触发一次摘要"),
+            message.content.includes("prompt-too-long triggered summary once"),
         ),
       ).toBe(false);
       expect(transcriptFiles).toHaveLength(1);
-      expect(result.history).toEqual([userMessage("验证恢复边界"), assistantMessage("recovered")]);
+      expect(result.history).toEqual([
+        userMessage("Verify recovery boundary"),
+        assistantMessage("recovered"),
+      ]);
       expect(result.history.some((message) => message.content?.includes("discarded"))).toBe(false);
       validateToolPairing(result.history);
     } finally {
@@ -1005,7 +1014,7 @@ describe("chapter 20 full harness", () => {
     hooks.register("Stop", (context) => {
       stopCalls += 1;
       if (stopCalls === 1) {
-        return new HookResult({ forceContinue: userMessage("继续完成最终回答") });
+        return new HookResult({ forceContinue: userMessage("Continue completing final reply") });
       }
       expect(context.stopHookActive).toBe(true);
       return new HookResult();
@@ -1014,7 +1023,7 @@ describe("chapter 20 full harness", () => {
     const runner = buildAgent(P20, harness.dependencies);
 
     try {
-      const result = await runner.run("验证 Stop");
+      const result = await runner.run("Verify Stop");
       const assistantTexts = result.history
         .filter((message) => message.role === "assistant")
         .map((message) => message.content);
@@ -1023,7 +1032,7 @@ describe("chapter 20 full harness", () => {
       expect(stopCalls).toBe(2);
       expect(model.requests.filter((request) => request.tools.length > 0)).toHaveLength(2);
       expect(assistantTexts).toEqual(["intermediate", "final"]);
-      expect(result.history).toContainEqual(userMessage("继续完成最终回答"));
+      expect(result.history).toContainEqual(userMessage("Continue completing final reply"));
       validateToolPairing(result.history);
     } finally {
       await runner.close();
@@ -1059,7 +1068,7 @@ describe("chapter 20 full harness", () => {
       const firstNow = harness.clock.now();
       const firstJob = await harness.cronStore.scheduleCron({
         cron: "* * * * *",
-        prompt: "消费一次",
+        prompt: "Consume once",
         timezone: "UTC",
         recurring: false,
         durable: true,
@@ -1080,7 +1089,7 @@ describe("chapter 20 full harness", () => {
       const secondNow = harness.clock.now();
       const pendingJob = await harness.cronStore.scheduleCron({
         cron: "* * * * *",
-        prompt: "等待重建",
+        prompt: "Wait for rebuild",
         timezone: "UTC",
         recurring: false,
         durable: true,
@@ -1151,7 +1160,7 @@ describe("chapter 20 full harness", () => {
     model.attachProtocol(harness.protocol);
     const task = await harness.taskStore.createTask({
       subject: "B",
-      description: "完成绑定 Worktree 中的任务",
+      description: "Complete tasks in bound Worktree",
     });
     const binding = await harness.worktrees.createWorktree({
       taskId: task.id,
@@ -1161,7 +1170,7 @@ describe("chapter 20 full harness", () => {
     const runner = buildAgent(P20, harness.dependencies);
 
     try {
-      const initialResult = await runner.run("让 teammate 完成 B");
+      const initialResult = await runner.run("Have teammate complete B");
       expect(initialResult.finalText).toBe("teammate started");
       await harness.teammates.waitForIdleTimeout("worker");
       const result = await runner.runEvents();

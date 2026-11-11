@@ -32,7 +32,7 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-// Adapter 将平台 errno 收敛成 core 可稳定映射给模型的领域错误。
+// Adapter converges platform errno into domain errors that core can stably map for the model.
 function translateFileSystemError(error: unknown): Error {
   if (
     error instanceof WorkspacePathError ||
@@ -58,7 +58,7 @@ function translateFileSystemError(error: unknown): Error {
   return new FileSystemOperationError("File system operation failed");
 }
 
-// 所有路径以相对路径进入，先在词法层拒绝盘符、绝对路径和上级目录。
+// All paths enter as relative paths, rejecting drive letters, absolute paths, and parent directories at lexical analysis first.
 function isInside(root: string, candidate: string): boolean {
   const child = relative(root, candidate);
   return (
@@ -104,7 +104,7 @@ function relativeParts(value: string, label: string, allowWildcards: boolean): s
   return parts;
 }
 
-// 先用 realpath 固定物理 workspace，后续所有路径判断都以这个真实目录为根。
+// Pins physical workspace via realpath first; all subsequent path checks root at this real directory.
 async function workspaceRoot(workspace: string): Promise<string> {
   const root = await realpath(workspace);
   const information = await stat(root);
@@ -114,7 +114,7 @@ async function workspaceRoot(workspace: string): Promise<string> {
   return root;
 }
 
-// 向上找到最近存在的父目录并解析物理位置，让尚未创建的写入目标也经过链接逃逸检查。
+// Traverse up to the nearest existing parent directory and resolve its physical location, so uncreated write targets also undergo symlink escape checks.
 async function resolvedExistingParent(
   root: string,
   target: string,
@@ -140,7 +140,7 @@ export async function safePath(workspace: string, relativePath: string): Promise
     if (!isInside(root, target)) {
       throw new WorkspacePathError(`Path escapes workspace: ${relativePath}`);
     }
-    // 现有父路径必须解析真实位置，防止 junction 或符号链接把目标带出工作区。
+    // Existing parent paths must resolve to real locations to prevent junctions or symlinks from escaping the workspace.
     const existing = await resolvedExistingParent(root, target);
     const resolved = resolve(existing.physical, relative(existing.lexical, target));
     if (!isInside(root, resolved)) {
@@ -171,7 +171,7 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-// 仅实现工具契约需要的 *, **, ? 和字符类，不将未验证模式交给 Shell。
+// Implements only *, **, ?, and character classes required by the tool contract, without passing unvalidated patterns to Shell.
 function globRegex(pattern: string): RegExp {
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
@@ -207,7 +207,7 @@ function globRegex(pattern: string): RegExp {
   return new RegExp(`${source}$`, "u");
 }
 
-// 先只解析通配符之前的字面前缀，缩小编历范围且仍然走 safePath 的安全边界。
+// Resolves only the literal prefix before wildcards first, narrowing traversal scope while still following safePath security boundaries.
 async function literalPrefix(root: string, parts: readonly string[]): Promise<readonly string[]> {
   const literal: string[] = [];
   for (const part of parts) {
@@ -235,7 +235,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // 读取时同步处理 UTF-8 解码和可选的截断行数，避免超大文件直接进入上下文。
+  // Process UTF-8 decoding and optional line truncation simultaneously when reading, avoiding oversized files entering context directly.
   async readFile(workspace: string, relativePath: string, limit?: number): Promise<string> {
     try {
       if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
@@ -253,7 +253,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // 写入先校验安全路径，再递归创建父目录；返回的是 UTF-8 编码后的实际字节数。
+  // Validates safe path first before recursively creating parent directories; returns actual byte count after UTF-8 encoding.
   async writeFile(workspace: string, relativePath: string, content: string): Promise<number> {
     try {
       const target = await safePath(workspace, relativePath);
@@ -266,7 +266,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // 编辑要求精确匹配 old_text，避免用模糊替换改变未预期的相邻内容。
+  // Editing requires an exact match for old_text to avoid modifying unexpected adjacent content via fuzzy replacement.
   async editFile(
     workspace: string,
     relativePath: string,
@@ -291,7 +291,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
     }
   }
 
-  // glob 从通配符之前的字面前缀开始遍历，不跟随符号链接目录，匹配结果再次过安全边界。
+  // glob traverses from the literal prefix before wildcards, skips symlink directories, and passes matches through the security boundary again.
   async globFiles(workspace: string, pattern: string): Promise<readonly string[]> {
     try {
       const root = await workspaceRoot(workspace);
@@ -317,7 +317,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
       }
       const results: string[] = [];
       const pending = [start];
-      // Dirent.isDirectory() 不会跟随符号链接目录，避免递归越界和链接环。
+      // Dirent.isDirectory() does not follow symlink directories to avoid recursive traversal out of bounds and symlink loops.
       while (pending.length > 0) {
         const directory = pending.pop();
         if (directory === undefined) {

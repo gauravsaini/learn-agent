@@ -32,7 +32,7 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-// Adapter 将平台 errno 收敛成 core 可稳定映射给模型的领域错误。
+// Adapter converges platform errno into domain errors that core can stably map for the model.
 function translateFileSystemError(error: unknown): Error {
   if (
     error instanceof WorkspacePathError ||
@@ -58,7 +58,7 @@ function translateFileSystemError(error: unknown): Error {
   return new FileSystemOperationError("File system operation failed");
 }
 
-// 所有路径以相对路径进入，先在词法层拒绝盘符、绝对路径和上级目录。
+// All paths enter as relative paths, rejecting drive letters, absolute paths, and parent directories at lexical analysis first.
 function isInside(root: string, candidate: string): boolean {
   const child = relative(root, candidate);
   return (
@@ -138,7 +138,7 @@ export async function safePath(workspace: string, relativePath: string): Promise
     if (!isInside(root, target)) {
       throw new WorkspacePathError(`Path escapes workspace: ${relativePath}`);
     }
-    // 现有父路径必须解析真实位置，防止 junction 或符号链接把目标带出工作区。
+    // Existing parent paths must resolve to real locations to prevent junctions or symlinks from escaping the workspace.
     const existing = await resolvedExistingParent(root, target);
     const resolved = resolve(existing.physical, relative(existing.lexical, target));
     if (!isInside(root, resolved)) {
@@ -169,7 +169,7 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-// 仅实现工具契约需要的 *, **, ? 和字符类，不将未验证模式交给 Shell。
+// Implements only *, **, ?, and character classes required by the tool contract, without passing unvalidated patterns to Shell.
 function globRegex(pattern: string): RegExp {
   let source = "^";
   for (let index = 0; index < pattern.length; index += 1) {
@@ -310,7 +310,7 @@ export class NodeWorkspaceFileSystem implements WorkspaceFileSystem {
       }
       const results: string[] = [];
       const pending = [start];
-      // Dirent.isDirectory() 不会跟随符号链接目录，避免递归越界和链接环。
+      // Dirent.isDirectory() does not follow symlink directories to avoid recursive traversal out of bounds and symlink loops.
       while (pending.length > 0) {
         const directory = pending.pop();
         if (directory === undefined) {

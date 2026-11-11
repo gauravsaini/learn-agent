@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// CLI 是真实运行入口：负责参数解析、环境读取、模型与持久化资源装配、用户审批/审计边界，以及执行/清理错误归一。
+// CLI is the real runtime entry point: handles argument parsing, environment reading, model and persistent resource assembly, user approval/audit boundaries, and execution/cleanup error normalization.
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -41,7 +41,7 @@ import { McpRuntime, McpServerSpec, McpToolPolicy } from "./features/mcp-tools.j
 
 const require = createRequire(import.meta.url);
 
-// 终端审批在真实交互入口实现；非 TTY 默认拒绝，避免无人值守时自动放行工具。
+// Terminal approval is implemented at the real interactive entry; non-TTY defaults to deny to prevent automatically allowing tools when unattended.
 class TerminalApprovalProvider implements ApprovalProvider {
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
     const definition = request.prepared.definition;
@@ -49,11 +49,11 @@ class TerminalApprovalProvider implements ApprovalProvider {
     if (definition === undefined || proposed === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write(`原因: ${proposed.reason}\n`);
-    stderr.write(`参数: ${JSON.stringify(request.prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write(`Reason: ${proposed.reason}\n`);
+    stderr.write(`Arguments: ${JSON.stringify(request.prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return new PermissionDecision(
         "deny",
         "No interactive approval input was available",
@@ -63,7 +63,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return new PermissionDecision(
@@ -77,7 +77,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
   }
 }
 
-// 终端审计把权限决策写入 stderr，使真实运行保留最小可追踪记录。
+// Terminal audit writes permission decisions to stderr, retaining minimal traceable records for real runs.
 class TerminalAuditSink implements AuditSink {
   async record(request: PermissionRequest, decision: PermissionDecision): Promise<void> {
     const definition = request.prepared.definition;
@@ -95,9 +95,9 @@ interface RunArguments {
   readonly prompt: string;
 }
 
-// LiveRuntime 记录 execute 需要单独兜底关闭的运行时；buildAgent 成功后由 Runner 统一释放。
+// LiveRuntime records runtimes that execute must close as fallback; released by Runner after buildAgent succeeds.
 interface LiveRuntime {
-  // buildAgent 成功后 dependencies.resources 接管这些对象；失败时 execute 通过显式字段兜底关闭。
+  // After buildAgent succeeds, dependencies.resources takes over these objects; on failure, execute closes them via explicit fields as a fallback.
   readonly model: OpenAIChatModel;
   readonly dependencies: BuildDependencies;
   readonly worktreeRuntime?: WorktreeRuntime;
@@ -107,7 +107,7 @@ interface LiveRuntime {
   readonly mcpRuntime?: McpRuntime;
 }
 
-// 只接受 --chapter/--prompt；固定章节入口会自动补上 chapter，其他参数立即失败。
+// Only accept --chapter/--prompt; fixed chapter entrypoints automatically supply chapter, failing immediately on other arguments.
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
@@ -141,10 +141,10 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
   return { chapter, prompt };
 }
 
-// execute 负责真实资源生命周期：先创建共享运行时，再运行 Agent，最后按统一失败列表关闭。
+// execute manages real resource lifecycles: create shared runtime first, run the Agent, and close via unified failure list.
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 先创建一个可追踪的 LiveRuntime，再把同一 dependencies 交给 buildAgent；
-  // Runner 接管成功路径，构造失败路径仍能按创建顺序回收已启动资源。
+  // Creates a traceable LiveRuntime first, then passes the same dependencies to buildAgent;
+  // Runner takes over the success path; construction failure paths can still reclaim started resources in creation order.
   const workspace = resolve(process.cwd());
   const runtime = createLiveRuntime(profile, workspace);
   const {
@@ -160,11 +160,11 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
   const failures: unknown[] = [];
   let exitCode: number | undefined;
   try {
-    // 在创建任何运行状态前先验证 cwd 是 Git repository root，避免在错误目录留下任务库。
+    // Verify cwd is the Git repository root before creating any runtime state to avoid leaving task stores in the wrong directory.
     if (worktreeRuntime !== undefined) await worktreeRuntime.validateRepository();
     runner = buildAgent(profile, dependencies);
     if (teammateRuntime !== undefined) {
-      // 队友结果到达 Lead mailbox 后，立即请求独立 event turn。
+      // Immediately requests an independent event turn after teammate results reach Lead mailbox.
       teammateRuntime.bindWakeup(async () => {
         if (runner === undefined) {
           throw new Error("Teammate wakeup received before AgentRunner was built");
@@ -173,7 +173,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
       });
     }
     if (cronRuntime !== undefined) {
-      // Cron wakeup 在 runner 就绪后绑定，事件回合由同一个 AgentRunner 消费。
+      // Cron wakeup binds after the runner is ready; the same AgentRunner consumes event turns.
       cronRuntime.bindWakeup(async () => {
         if (runner === undefined) {
           throw new Error("Cron wakeup received before AgentRunner was built");
@@ -195,7 +195,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
       failures.push(error);
     }
   } else {
-    // buildAgent 失败时没有统一 resources，需要按创建顺序兜底关闭。
+    // When buildAgent fails, no unified resources exist; close them in creation order as a fallback.
     for (const resource of [mcpRuntime, teammateRuntime, cronRuntime, backgroundSupervisor]) {
       if (resource === undefined) continue;
       try {
@@ -216,9 +216,9 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
   return exitCode;
 }
 
-// 根据章节能力构造真实运行时，并复用同一个 supervisor、inbox 和 store，避免各运行时持有独立状态。
+// Construct real runtimes by chapter capabilities and reuse the same supervisor, inbox, and store to avoid separate state.
 function createLiveRuntime(profile: ChapterProfile, workspace: string): LiveRuntime {
-  // 这是 P20 唯一的真实组合根：所有跨能力共享关系在此建立，返回对象只读以防执行阶段换依赖。
+  // This is the only real composition root of P20: All cross-capability sharing relationships are established here, and the returned object is read-only to prevent swapping dependencies during execution.
   const envPath = resolve(workspace, ".env");
   const requiresFallback = profile.capabilities.has("recovery");
   const settings = existsSync(envPath)
@@ -230,11 +230,11 @@ function createLiveRuntime(profile: ChapterProfile, workspace: string): LiveRunt
     profile.capabilities.has("task_dag_json") && !profile.capabilities.has("task_dag_sqlite")
       ? new JsonTaskStore(workspace)
       : undefined;
-  // 单个 SqliteTaskStore 同时注入 Lead、Subagent 和 Teammate factory，避免数据库分叉。
+  // A single SqliteTaskStore injects into Lead, Subagent, and Teammate factories to prevent database forks.
   const sqliteTaskStore = profile.capabilities.has("task_dag_sqlite")
     ? new SqliteTaskStore(workspace)
     : undefined;
-  // P18 WorktreeRuntime 同时实现 TaskClaimService 与 ToolContextProvider，并复用同一个 SQLite store。
+  // P18 WorktreeRuntime implements both TaskClaimService and ToolContextProvider, reusing the same SQLite store.
   const worktreeRuntime =
     profile.capabilities.has("worktree") && sqliteTaskStore !== undefined
       ? new WorktreeRuntime({
@@ -243,7 +243,7 @@ function createLiveRuntime(profile: ChapterProfile, workspace: string): LiveRunt
           gitRunner: new SubprocessGitRunner(),
         })
       : undefined;
-  // WorkStealingRuntime 与 Worktree 共享 store/claim service，让认领和工具上下文指向同一任务集。
+  // WorkStealingRuntime and Worktree share the store/claim service so claims and tool context point to the same task set.
   const workStealingRuntime =
     sqliteTaskStore === undefined
       ? undefined
@@ -251,7 +251,7 @@ function createLiveRuntime(profile: ChapterProfile, workspace: string): LiveRunt
           store: sqliteTaskStore,
           ...(worktreeRuntime === undefined ? {} : { claimService: worktreeRuntime }),
         });
-  // 后台 supervisor 与 EventInbox 是 Cron/Teammate 共用的单一事件源。
+  // Background supervisor and EventInbox form the single event source shared by Cron and Teammates.
   const backgroundSupervisor = profile.capabilities.has("background")
     ? new JobSupervisor({ store: new JsonBackgroundJobStore(workspace), inbox: new EventInbox() })
     : undefined;
@@ -268,8 +268,8 @@ function createLiveRuntime(profile: ChapterProfile, workspace: string): LiveRunt
           team: teammateRuntime,
         })
       : undefined;
-  // 协议运行时复用队友的 TeammateRuntime/MailboxStore，请求状态落在独立 JsonProtocolStore。
-  // 只有 profile 声明了 mcp 能力时才创建运行时，避免低章额外启动子进程。
+  // The protocol runtime reuses the teammate TeammateRuntime/MailboxStore; request states persist in a separate JsonProtocolStore.
+  // Create the runtime only when the profile declares mcp capability, avoiding extra child processes in earlier chapters.
   const mcpRuntime = profile.capabilities.has("mcp") ? createMcpRuntime() : undefined;
   const dependencies: BuildDependencies = {
     model,
@@ -306,9 +306,9 @@ function createLiveRuntime(profile: ChapterProfile, workspace: string): LiveRunt
   });
 }
 
-// 本地演示固定连接两个 stdio demo server；远程工具 policy 与 schema 校验都由 CLI 组装注入。
+// Local demos connect to two stdio demo servers; the CLI assembles and injects remote tool policy and schema validation.
 function createMcpRuntime(): McpRuntime {
-  // 本地演示允许 allowlist 固定声明四个远程工具及其 effect；生产应由配置提供。
+  // Local demos allow an allowlist declaring four remote tools and their effects; production should supply this by configuration.
   const policies = Object.freeze([
     new McpToolPolicy({ remoteName: "lookup", effect: "read" }),
     new McpToolPolicy({ remoteName: "fail", effect: "read" }),
@@ -322,7 +322,7 @@ function createMcpRuntime(): McpRuntime {
   const tsxCli = join(dirname(require.resolve("tsx")), "cli.mjs");
   const serverCommand = process.execPath;
   const serverPrefix = useSourceServer ? [tsxCli] : [];
-  // 两个 demo server 共用同一组 policy，但 alias 不同，验证同名远程工具经 alias 隔离后不冲突。
+  // Two demo servers share the same policy set but have different aliases to verify that same-named remote tools do not conflict after alias isolation.
   const servers: readonly (readonly [string, string])[] = [
     ["demo_alpha", "alpha"],
     ["demo_beta", "beta"],
@@ -338,7 +338,7 @@ function createMcpRuntime(): McpRuntime {
         toolTimeoutSeconds: 5,
       }),
   );
-  // stdio adapter 和 Ajv schema validator 由 CLI 组装后注入 McpRuntime。
+  // CLI assembles stdio adapter and Ajv schema validator before injecting into McpRuntime.
   return new McpRuntime({
     servers: specs,
     connectionFactory: new StdioMcpConnectionFactory(),
@@ -346,7 +346,7 @@ function createMcpRuntime(): McpRuntime {
   });
 }
 
-// Cron 复用 supervisor 的 EventInbox，确保周期事件与后台任务进入同一条事件流。
+// Cron reuses supervisor EventInbox to ensure periodic events and background tasks enter the same event stream.
 function createCronRuntime(workspace: string, supervisor: JobSupervisor | undefined): CronRuntime {
   if (supervisor === undefined) {
     throw new Error("cron capability requires background supervisor");
@@ -359,7 +359,7 @@ function createCronRuntime(workspace: string, supervisor: JobSupervisor | undefi
   });
 }
 
-// 队友复用后台 supervisor 与 cron 的 inbox/supervisor，避免 mailbox、cron、后台任务各自处理事件。
+// Teammates reuse inbox/supervisor from background supervisor and cron to prevent mailbox, cron, and background tasks from handling events separately.
 function createTeammateRuntime(
   workspace: string,
   supervisor: JobSupervisor | undefined,
@@ -376,7 +376,7 @@ function createTeammateRuntime(
   });
 }
 
-// recovery 必须显式配置 fallback model；缺失时在运行前失败而不是后续降级。
+// recovery must configure fallback models explicitly; missing configurations fail before running rather than falling back later.
 function requiredFallbackModel(fallbackModel: string | undefined): string {
   if (fallbackModel === undefined) {
     throw new ConfigurationError(["OPENAI_FALLBACK_MODEL"]);
@@ -384,7 +384,7 @@ function requiredFallbackModel(fallbackModel: string | undefined): string {
   return fallbackModel;
 }
 
-// 真实运行 Hook 只输出生命周期事件到 stderr，便于用户确认用户提示、工具调用和停止时机。
+// Real run Hooks only output lifecycle events to stderr, helping users verify user prompts, tool calls, and stop timing.
 function liveHooks(): HookRegistry {
   const hooks = new HookRegistry();
   hooks.register("UserPromptSubmit", () => {
@@ -438,12 +438,12 @@ export async function runProfile(
   });
 }
 
-// 配置错误与运行失败使用不同退出码，避免调用方把缺失密钥当成普通执行错误。
+// Configuration errors and runtime failures use different exit codes to prevent callers from treating missing keys as ordinary execution errors.
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;

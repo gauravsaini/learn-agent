@@ -1,66 +1,66 @@
 import type { AssistantMessage, ChatMessage } from "./messages.js";
 
-// 模型边界与供应商 SDK 解耦，循环只处理规范化后的请求和回复。
+// The model boundary decouples from provider SDKs; the loop handles only normalized requests and replies.
 //
-// 核心循环 (AgentRunner) 只知道 ModelClient.complete() 一个入口，
-// 不知道具体是 OpenAI、Anthropic 还是本地模拟器。
-// 这种边界让测试可以注入 ScriptedModelClient，也方便后续章节替换供应商。
-// 供应商结束原因的受控联合；保留 function_call 只为在适配器边界明确拒绝旧协议。
+// The core loop (AgentRunner) only knows a single entry point: ModelClient.complete(),
+// Does not know whether the backend is OpenAI, Anthropic, or a local simulator.
+// This boundary allows tests to inject ScriptedModelClient and makes it easy for later chapters to replace providers.
+// Controlled union of vendor finish reasons; retains function_call only to reject legacy protocols explicitly at adapter boundaries.
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter" | "function_call";
 
-// 注册表发布给模型的函数工具定义；parameters 为 JSON Schema。
+// Function tool definitions published to the model by the registry; parameters is JSON Schema.
 //
-// OpenAIToolSchema 对应 Chat Completions 的 tools 参数格式。
-// 模型通过这个 JSON Schema 知道有哪些工具可用、每个工具接受什么参数。
+// OpenAIToolSchema corresponds to the tools parameter format of Chat Completions.
+// The model learns available tools and accepted parameters through this JSON Schema.
 export interface OpenAIToolSchema {
-  // 当前协议只发布函数工具，避免把不支持的工具形状传到供应商边界。
+  // Current protocols publish function tools only, avoiding passing unsupported tool shapes to vendor boundaries.
   readonly type: "function";
-  // 供应商要求嵌套在 function 字段中的工具元数据。
+  // Tool metadata that vendors require nested inside the function field.
   readonly function: {
-    // 模型调用时返回的稳定工具标识，必须与注册表中的名称一致。
+    // Stable tool identifier returned during model calls; must match the name in the registry.
     readonly name: string;
-    // 面向模型的能力和使用时机说明。
+    // Instructions for the model on capabilities and when to use them.
     readonly description: string;
-    // JSON Schema 参数契约；核心层不依赖供应商 SDK 的具体类型。
+    // JSON Schema parameter contract; core layer does not depend on concrete vendor SDK types.
     readonly parameters: Readonly<Record<string, unknown>>;
   };
 }
 
-// 单次模型请求的冻结快照，防止请求构造后历史或工具定义继续变化。
+// Frozen snapshot of a single model request to prevent history or tool definitions from changing after construction.
 export interface ModelRequest {
-  // 循环向模型边界发送的不可变快照；可选模型/预算供后续章节策略使用。
-  // messages 必须是已配对的会话历史；tools 是工具注册表的快照。
-  // model/maxTokens 供后续章节在单次请求层面覆盖默认模型或限制 token。
+  // Immutable snapshot sent by the loop to model boundaries; optional model/budget for subsequent chapter policies.
+  // messages must be paired session history; tools is a snapshot of the Tool Registry.
+  // model/maxTokens allows later chapters to override default models or limit tokens per request.
   readonly messages: readonly ChatMessage[];
-  // 与 messages 同一时刻冻结的工具描述，模型只能看到本轮可实际调用的能力。
+  // Tool descriptions frozen at the same time as messages; the model sees only capabilities callable in this turn.
   readonly tools: readonly OpenAIToolSchema[];
-  // 可选的本次模型覆盖值；省略时由适配器使用已校验的默认模型。
+  // Optional per-request model override value; the adapter uses the validated default model when omitted.
   readonly model?: string;
-  // 可选的单次输出预算；不是整轮 Agent 的回合预算。
+  // Optional per-request output budget; not the turn budget for the entire Agent.
   readonly maxTokens?: number;
 }
 
-// 统一供应商的用量统计字段，避免核心逻辑依赖各 SDK 的命名约定。
+// Standardize provider usage statistics fields, preventing core logic from depending on SDK naming conventions.
 export interface TokenUsage {
-  // 供应商用量统一为内部字段名，避免核心依赖 SDK 的 snake_case。
+  // Unifies vendor usage to internal field names, avoiding core dependence on SDK snake_case.
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly totalTokens: number;
 }
 
-// 模型适配器返回给 Agent Loop 的规范化结果，包含消息、结束原因和可选用量。
+// Normalized result returned to the Agent Loop by the model adapter, including message, finish reason, and optional usage.
 export interface ModelReply {
-  // 适配器必须把供应商回复规范化为 assistant 消息和明确结束原因。
-  // finishReason 用于区分正常结束（stop）、被截断（length）和请求工具（tool_calls）。
+  // The adapter must normalize provider replies into assistant messages and explicit finish reasons.
+  // finishReason distinguishes normal completion (stop), truncation (length), and tool requests (tool_calls).
   readonly message: AssistantMessage;
   readonly finishReason: FinishReason;
   readonly usage?: TokenUsage;
 }
 
-// 核心循环唯一的模型依赖点；实现负责网络、SDK 和外部响应的边界校验。
+// The sole model dependency of the core loop; implementations handle boundary validation of networks, SDKs, and external responses.
 export interface ModelClient {
-  // 唯一模型依赖点；测试可用脚本化实现验证每轮请求。
-  // complete() 接收完整请求（消息 + 工具定义），返回规范化的回复。
-  // 这保持核心循环与 SDK 完全隔离。
+  // The sole model dependency point; tests can use scripted implementations to verify per-turn requests.
+  // complete() receives the full request (messages + tool definitions) and returns a normalized reply.
+  // This keeps the core loop completely isolated from the SDK.
   complete(request: ModelRequest): Promise<ModelReply>;
 }

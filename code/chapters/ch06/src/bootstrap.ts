@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook 和 TODO 观察器。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, and TODO observers by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -15,36 +15,36 @@ import { createChapterOneTools, createChapterTwoTools } from "./features/builtin
 import { SubagentTool } from "./features/subagents.js";
 import { TodoTracker } from "./features/todos.js";
 
-// P06 在已具备 Hook 与权限的前提下才组装子代理，委派本身同样受父策略控制。
+// P06 assembles subagents only when hooks and permissions exist; delegation itself is controlled by parent policy.
 const SYSTEM_PROMPT =
   "You are a coding agent. Use tools when needed, inspect their results, and answer accurately.";
 const TODO_SYSTEM_PROMPT =
   "\nFor complex tasks, call todo_write with the complete task snapshot and update it when the plan changes.";
 
-// Hook 仅在 P04 及以后组装，避免给早期教学快照注入未讲解的生命周期。
-// P05 将 TodoTracker 同时注册为工具和每轮观察器，避免状态与提示分离。
+// Hooks are assembled only in P04 and later to avoid injecting unexplained lifecycles into early tutorial snapshots.
+// P05 registers TodoTracker as both tool and per-turn observer to prevent decoupling state from prompts.
 export interface BuildDependencies {
-  // 外部边界均可注入，离线测试无需启动真实进程或网络客户端。
+  // All external boundaries are injectable; offline tests do not need to start real processes or network clients.
   readonly model: ModelClient;
-  // 单次父子运行共用的工作区根目录，子代理只能在该边界内操作文件。
+  // Workspace root shared by a single parent-child run; subagents can only operate on files within this boundary.
   readonly workspace: string;
-  // 可替换真实 PowerShell，用于测试或宿主特定的命令边界。
+  // Replaceable real PowerShell for testing or host-specific command boundaries.
   readonly commandRunner?: CommandRunner;
-  // 可替换 Node 文件系统，实现可控副作用和工作区校验。
+  // Replaceable Node file system for controllable side effects and workspace validation.
   readonly fileSystem?: WorkspaceFileSystem;
-  // 对 ask 决策提供人或外部系统的批准结果。
+  // Provide human or external system approval results for ask decisions.
   readonly approvalProvider?: ApprovalProvider;
-  // 收集父、子 Agent 均会经过的权限决策审计记录。
+  // Collect permission decision audit records traversed by both parent and child agents.
   readonly auditSink?: AuditSink;
-  // P04 及以后由父子运行器共享的生命周期扩展。
+  // Lifecycle extensions shared between parent and child runners from P04 onward.
   readonly hooks?: HookRegistry;
-  // 父循环的调用方上限；子代理另有不得超过 30 的独立上限。
+  // Caller limit for the parent loop; subagents have an independent limit not exceeding 30.
   readonly maxTurns?: number;
 }
 
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 先验证 profile 与章节匹配，再按能力选择工具集与权限策略，最后组装 AgentRunner。
-  // 禁止伪造同章节号但能力不同的 profile，保持教学快照固定。
+  // Validates that profile matches chapter first, selects toolset and permission policy by capability, and finally assembles AgentRunner.
+  // Forbids forging profiles with identical chapter numbers but different capabilities, keeping tutorial snapshots fixed.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -64,7 +64,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       ? new HookRegistry()
       : dependencies.hooks;
   if (profile.capabilities.has("subagent")) {
-    // 子代理复用受控依赖工厂，但得到自己的 AgentRunner 与工具注册表。
+    // Subagents reuse controlled dependency factories, but receive their own AgentRunner and Tool Registry.
     if (hooks === undefined || permissionPolicy === undefined) {
       throw new Error("subagent capability requires hooks and permission policy");
     }
@@ -90,14 +90,14 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
 }
 
 interface StandardTools {
-  // 每次组合创建一个独立 registry；子代理工厂借此避免与父 registry 互相污染。
+  // Create an independent registry on each composition; subagent factories use this to avoid polluting parent registries.
   readonly tools: ToolRegistry;
-  // P05 以后同 registry 对应的会话级计划观察器。
+  // Session-level plan observer corresponding to registry from P05 onward.
   readonly todoTracker?: TodoTracker;
 }
 
-// createStandardTools 封装章节通用工具注册：先创建 shell 与文件工具集，
-// 再按 profile 能力决定是否追加 todo 工具和对应观察器，返回不可变组合。
+// createStandardTools encapsulates chapter tool registration: create shell and file tools first,
+// Determines whether to append TODO tools and corresponding observers by profile capabilities next, returning immutable composition.
 function createStandardTools(
   profile: ChapterProfile,
   commandRunner: CommandRunner,
@@ -115,8 +115,8 @@ function createStandardTools(
   return Object.freeze({ tools, todoTracker });
 }
 
-// permissionPolicyForProfile 根据 profile 的 policy 能力组合权限策略；
-// 子代理复用同一套策略，因此委派不能绕过父 Agent 的审批与审计边界。
+// permissionPolicyForProfile composes permission policies based on profile policy capabilities;
+// Subagents reuse the same policies, so delegation cannot bypass the parent Agent's approval and audit boundaries.
 function permissionPolicyForProfile(
   profile: ChapterProfile,
   fileSystem: WorkspaceFileSystem,
@@ -133,7 +133,7 @@ function permissionPolicyForProfile(
   if (dependencies.auditSink === undefined) {
     throw new Error("auditSink is required for chapter 3 or later");
   }
-  // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+  // Promote only write tools; default policy rules handle Shell execution approval.
   return new PermissionPolicy({
     rules: [
       new PermissionRule({

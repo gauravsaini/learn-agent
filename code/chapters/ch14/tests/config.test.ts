@@ -9,8 +9,8 @@ import { runCli } from "../src/cli.js";
 
 describe("OpenAI settings", () => {
   test("the unified CLI exits with code 2 before network access when config is missing", async () => {
-    // CLI 从 process.cwd() 解析 .env，因此切到一个没有 .env 的临时目录即可断言缺失配置；
-    // 不能删除仓库根的真实 .env：20 章共用同一个文件，并发用例会互相摘掉对方的凭据。
+    // CLI resolves .env from process.cwd(), so switching to a temporary directory without .env asserts missing configuration;
+    // Cannot delete the real .env at the repository root: 20 chapters share the same file, and concurrent test cases would remove each other's credentials.
     const originalCwd = process.cwd();
     const isolated = mkdtempSync(join(tmpdir(), "agent-tutorial-config-"));
     process.chdir(isolated);

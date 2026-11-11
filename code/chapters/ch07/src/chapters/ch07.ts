@@ -1,6 +1,6 @@
 import { runProfile } from "../cli.js";
 import { P07 } from "../core/profiles.js";
 
-// 固定入口选择 P07：组合根会扫描工作区 skills/，把目录快照加入 System Prompt，
-// 并注册 load_skill；正文只有模型显式调用后才会进入历史。
+// Fixed entrypoint selects P07: composition root scans workspace skills/ and adds catalog snapshots to System Prompt,
+// Register load_skill as well; content enters history only after explicit model invocation.
 process.exitCode = await runProfile(P07, process.argv.slice(2));

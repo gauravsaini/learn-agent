@@ -1,6 +1,6 @@
-// 第 1-5 章内置工具集：shell、read_file、write_file、edit_file、glob。
-// 工具 schema 使用严格对象，避免多余字段绕过模型可见的 JSON Schema。
-// 第 1-4 章内置工具集：shell、read_file、write_file、edit_file、glob。
+// Chapter 1-5 built-in tool set: shell, read_file, write_file, edit_file, glob.
+// Tool schemas use strict objects to prevent excess fields from bypassing model-visible JSON Schemas.
+// Chapter 1-4 built-in tool set: shell, read_file, write_file, edit_file, glob.
 import { z } from "zod";
 
 import type { CommandResult, CommandRunner } from "../core/commands.js";
@@ -16,11 +16,11 @@ import type { WorkspaceFileSystem } from "../core/filesystem.js";
 import type { ToolDefinition } from "../core/tools.js";
 import { ToolRegistry, toolError, toolSuccess } from "../core/tools.js";
 
-// 严格对象拒绝多余字段，确保工具契约与模型看到的 JSON Schema 一致。
+// Strict object rejects extraneous fields, ensuring tool contracts match the JSON Schema seen by the model.
 const shellInputSchema = z.strictObject({ command: z.string().min(1) });
 
 export function createShellTool(commandRunner: CommandRunner): ToolDefinition<{ command: string }> {
-  // shell 属于 execute effect，即使命令看似只读，权限策略也会默认要求批准。
+  // shell belongs to execute effects; even if commands appear read-only, permission policies require approval by default.
   return {
     name: "shell",
     description: "Run a PowerShell command in the current workspace.",
@@ -34,9 +34,9 @@ export function createShellTool(commandRunner: CommandRunner): ToolDefinition<{ 
         return toolError("shell_start_failed", "PowerShell process could not be started");
       }
 
-      // 保留有限输出和超时状态，模型可据此决定是否调整命令。
+      // Preserves bounded output and timeout state so the model can decide whether to adjust commands.
       let output = result.output.length === 0 ? "(no output)" : result.output;
-      // 保留有限输出和超时状态，模型可据此决定是否调整命令。
+      // Preserves bounded output and timeout state so the model can decide whether to adjust commands.
       if (result.truncated) {
         output = `${output}\n[output truncated]`;
       }
@@ -64,7 +64,7 @@ const readFileInputSchema = z.strictObject({
   path: z.string().min(1),
   limit: z.number().int().positive().optional(),
 });
-// 写入和编辑都携带 path，权限层据此判断工作区硬边界。
+// Writes and edits both carry path, which the permission layer uses to determine hard workspace boundaries.
 const writeFileInputSchema = z.strictObject({
   path: z.string().min(1),
   content: z.string(),
@@ -82,7 +82,7 @@ type EditFileInput = z.infer<typeof editFileInputSchema>;
 type GlobInput = z.infer<typeof globInputSchema>;
 
 function createReadFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<ReadFileInput> {
-  // read effect 不产生外部副作用，无规则反对时默认允许。
+  // read effects produce no external side effects; allow by default when no rules object.
   return {
     name: "read_file",
     description: "Read a UTF-8 text file from the current workspace.",
@@ -92,7 +92,7 @@ function createReadFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<Rea
       try {
         return toolSuccess(await fileSystem.readFile(context.workspace, path, limit));
       } catch (error) {
-        // 已知文件领域错误映射成稳定错误码；未知错误交给上层统一处理。
+        // Map known file domain errors to stable error codes; delegate unknown errors to upper layers for uniform handling.
         if (error instanceof WorkspacePathError) {
           return toolError("path_escape", error.message);
         }
@@ -115,7 +115,7 @@ function createReadFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<Rea
 }
 
 function createWriteFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<WriteFileInput> {
-  // write effect 会先触发工作区边界检查，再进入 confirm-file-write 审批规则。
+  // The write effect triggers the workspace boundary check first, then enters the confirm-file-write approval rule.
   return {
     name: "write_file",
     description: "Write UTF-8 text to a file in the current workspace.",
@@ -142,7 +142,7 @@ function createWriteFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<Wr
 }
 
 function createEditFileTool(fileSystem: WorkspaceFileSystem): ToolDefinition<EditFileInput> {
-  // edit 与 write 同样标记为 write，P03 权限策略不区分具体文件写入方式。
+  // edit and write are both tagged as write; P03 permission policy does not distinguish specific file write methods.
   return {
     name: "edit_file",
     description: "Replace exact text once in a UTF-8 file in the current workspace.",
@@ -208,9 +208,9 @@ export function createChapterTwoTools(
   commandRunner: CommandRunner,
   fileSystem: WorkspaceFileSystem,
 ): ToolRegistry {
-  // 第 2 至第 5 章复用同一工具集；新增能力在循环边界而非工具本身。
-  // 第 2 至第 4 章复用同一工具集；新增能力在循环边界而非工具本身。
-  // 第 2、3 章复用同一工具集；第 3 章新增的是执行前权限策略而非工具本身。
+  // Chapters 2 through 5 reuse the same tool set; new capabilities exist at the loop boundary, not in tools themselves.
+  // Chapters 2 through 4 reuse the same tool set; new capabilities exist at the loop boundary, not in tools themselves.
+  // Chapters 2 and 3 reuse the same tool set; Chapter 3 introduces pre-execution permission policies, not new tools.
   const registry = createChapterOneTools(commandRunner);
   registry.register(createReadFileTool(fileSystem));
   registry.register(createWriteFileTool(fileSystem));

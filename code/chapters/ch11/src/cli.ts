@@ -19,7 +19,7 @@ import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 import { RecoveryConfig } from "./features/recovery.js";
 
-// 终端审批只做用户确认，不缓存决策；非 TTY 时默认拒绝。
+// Terminal approval only performs user confirmation and does not cache decisions; non-TTY defaults to deny.
 class TerminalApprovalProvider implements ApprovalProvider {
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
     const definition = request.prepared.definition;
@@ -27,11 +27,11 @@ class TerminalApprovalProvider implements ApprovalProvider {
     if (definition === undefined || proposed === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write(`原因: ${proposed.reason}\n`);
-    stderr.write(`参数: ${JSON.stringify(request.prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write(`Reason: ${proposed.reason}\n`);
+    stderr.write(`Arguments: ${JSON.stringify(request.prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return new PermissionDecision(
         "deny",
         "No interactive approval input was available",
@@ -41,7 +41,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return new PermissionDecision(
@@ -55,7 +55,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
   }
 }
 
-// 审计输出到 stderr，保证 stdout 只承载最终回答。
+// Audit output goes to stderr, ensuring stdout carries only final answers.
 class TerminalAuditSink implements AuditSink {
   async record(request: PermissionRequest, decision: PermissionDecision): Promise<void> {
     const definition = request.prepared.definition;
@@ -74,7 +74,7 @@ interface RunArguments {
 }
 
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
-  // 固定章节入口复用同一解析器，并由此禁止传入另一个 --chapter。
+  // Fixed chapter entrypoints reuse the same parser, thereby forbidding passing another --chapter.
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
   let prompt: string | undefined;
@@ -108,11 +108,11 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
 }
 
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 当前目录是文件与命令的唯一工作区边界。
+  // The current directory is the sole workspace boundary for files and commands.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
   const requiresFallback = profile.capabilities.has("recovery");
-  // recovery 能力要求同时读取 fallback model，缺项在创建网络客户端前失败。
+  // recovery capability requires reading fallback models simultaneously; missing items fail before creating network clients.
   const settings = existsSync(envPath)
     ? settingsFromEnvFile(envPath, requiresFallback)
     : settingsFromMapping({}, requiresFallback);
@@ -127,7 +127,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
     ...(profile.capabilities.has("hooks") ? { hooks: liveHooks() } : {}),
     ...(requiresFallback
       ? {
-          // CLI 使用显式主模型和 fallback model 构造恢复配置，避免隐式默认值。
+          // CLI constructs recovery configuration with explicit primary model and fallback model to avoid implicit defaults.
           recoveryConfig: new RecoveryConfig({
             primaryModel: settings.model,
             fallbackModel: requiredFallbackModel(settings.fallbackModel),
@@ -141,7 +141,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
 }
 
 function requiredFallbackModel(fallbackModel: string | undefined): string {
-  // fallback 是第 11 章显式配置项，缺省直接进入配置错误，不回退到主模型。
+  // fallback is an explicit Chapter 11 configuration; omitting it raises a configuration error rather than falling back to the primary model.
   if (fallbackModel === undefined) {
     throw new ConfigurationError(["OPENAI_FALLBACK_MODEL"]);
   }
@@ -202,11 +202,11 @@ export async function runProfile(
 }
 
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
-  // 进程边界将预期配置错误与运行错误映射为稳定退出码。
+  // The process boundary maps expected configuration errors and runtime errors to stable exit codes.
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;

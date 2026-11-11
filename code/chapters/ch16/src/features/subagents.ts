@@ -1,4 +1,4 @@
-// 第 6 章新增子代理能力：task 工具把自包含任务委派给隔离的 AgentRunner。
+// Chapter 6 introduces subagent capability: the task tool delegates self-contained tasks to isolated AgentRunners.
 import { z } from "zod";
 
 import { HookRegistry } from "../core/hooks.js";
@@ -9,15 +9,15 @@ import type { ToolContext, ToolDefinition, ToolResult } from "../core/tools.js";
 import { ToolRegistry, toolError, toolSuccess } from "../core/tools.js";
 
 export const TASK_TOOL_NAME = "task";
-// 默认 30 轮上限：子代理只做有限委派，避免同步调用拖住父循环。
+// Default 30-turn limit: Subagents perform only limited delegation to avoid synchronous calls dragging down parent loops.
 export const DEFAULT_SUBAGENT_MAX_TURNS = 30;
-// 子代理的固定职责提示；明确单任务和禁止继续委派的运行边界。
+// Fixed duty prompt for subagents; defines single-task and no-further-delegation execution boundaries.
 export const DEFAULT_SUBAGENT_SYSTEM_PROMPT =
   "You are a focused coding subagent working in the current workspace. " +
   "Complete only the delegated task, then return a concise, evidence-based final conclusion. " +
   "Do not delegate further.";
 
-// 子代理只接收自包含任务，并通过独立运行器返回最终结论而非中间历史。
+// Subagents receive only self-contained tasks and return final conclusions instead of intermediate history through independent runners.
 const taskInputSchema = z
   .object({
     description: z
@@ -28,30 +28,30 @@ const taskInputSchema = z
   })
   .strict();
 
-// 已清洗的委派描述；父 Agent 只允许把这一个字段交给子运行器。
+// Sanitized delegation descriptions; parent Agents permit passing only this single field to child runners.
 export type TaskInput = Readonly<z.output<typeof taskInputSchema>>;
-// 每次 task 调用都应创建独立模型，避免子任务间复用上下文或响应队列。
+// Each task call must create an independent model to avoid reusing context or response queues across subtasks.
 export type ModelClientFactory = () => ModelClient;
-// 每次 task 调用都应创建独立工具注册表，防止子任务残留工具状态。
+// Each task call must create an independent Tool Registry to prevent subtasks from retaining tool state.
 export type ToolRegistryFactory = () => ToolRegistry;
 
-// 工厂签名允许调用方为每次委派延迟创建独立的模型与工具实例。
+// Factory signatures allow callers to lazily create independent model and tool instances for each delegation.
 export interface SubagentToolOptions {
-  // 用工厂而非实例保证每个子任务拥有自己的模型与注册表。
+  // Use factories instead of instances to ensure each subtask has its own model and registry.
   readonly modelFactory: ModelClientFactory;
   readonly toolsFactory: ToolRegistryFactory;
-  // Hook 与策略作为受控边界共享，使子代理不能绕开父级治理。
+  // Hooks and policies share controlled boundaries so subagents cannot bypass parent governance.
   readonly hooks: HookRegistry;
   readonly permissionPolicy: PermissionPolicy;
-  // 可覆盖子代理职责提示，但不能传入空提示。
+  // Subagent role prompts can be overridden, but empty prompts are rejected.
   readonly systemPrompt?: string;
-  // 仅允许收紧默认上限，避免调用方放大单次委派成本。
+  // Only allows tightening the default ceiling to prevent callers from inflating single delegation costs.
   readonly maxTurns?: number;
 }
 
-// task 是父 Agent 可调用的外部工具，负责建立并封装一次隔离的子执行。
+// task is an external tool callable by parent Agents, establishing and encapsulating an isolated child execution.
 export class SubagentTool {
-  // 工厂在每次委派时创建隔离依赖，父代理的工具状态不会被子代理共享或改写。
+  // Factories create isolated dependencies on each delegation; tool states of parent agents are not shared or overwritten by subagents.
   readonly #modelFactory: ModelClientFactory;
   readonly #toolsFactory: ToolRegistryFactory;
   readonly #hooks: HookRegistry;
@@ -101,9 +101,9 @@ export class SubagentTool {
     });
   }
 
-  // 将已验证描述交给新运行器；所有内部异常在此转换为可安全回传的工具错误。
+  // Pass verified descriptions to new runners; convert all internal exceptions here into safely returnable tool errors.
   async #runTask(input: TaskInput, context: ToolContext): Promise<ToolResult> {
-    // 子代理在独立 AgentRunner 中执行；父级历史、TODO 状态和工具结果不会回流。
+    // Subagents execute in independent AgentRunners; parent history, TODO state, and tool results do not flow back.
     try {
       const tools: unknown = this.#toolsFactory();
       if (!(tools instanceof ToolRegistry)) {
@@ -113,7 +113,7 @@ export class SubagentTool {
         );
       }
       if (tools.names.includes(TASK_TOOL_NAME)) {
-        // 禁止子代理再次注册 task，防止无边界的递归委派。
+        // Forbids subagents from registering task again, preventing unbounded recursive delegation.
         return toolError("subagent_configuration_error", "Subagent tools must not include task");
       }
 
@@ -125,7 +125,7 @@ export class SubagentTool {
         );
       }
 
-      // 新 Runner 只继承运行边界；父历史和其他子任务历史不会传入。
+      // The new Runner only inherits execution boundaries. Parent history and other subtask histories do not pass in.
       const runner = new AgentRunner({
         model,
         tools,
@@ -137,7 +137,7 @@ export class SubagentTool {
         permissionPolicy: this.#permissionPolicy,
       });
       const result = await runner.run(input.description);
-      // 仅把最终结论作为工具结果回传，内部推理与工具历史留在子执行边界内。
+      // Returns only final conclusion as tool result; internal reasoning and tool history stay within sub-execution boundary.
       return toolSuccess(result.finalText);
     } catch (error) {
       if (error instanceof AgentLimitError) {
@@ -146,13 +146,13 @@ export class SubagentTool {
           `Subagent exceeded max_turns=${this.#maxTurns} without a final answer`,
         );
       }
-      // task handler 是子执行边界；不向父模型泄露内部异常文本。
+      // task handler is a child execution boundary; it does not leak internal exception text to the parent model.
       return toolError("subagent_execution_error", "Subagent execution failed");
     }
   }
 }
 
-// 以最小运行时形状验证工厂结果，防止错误配置到达 AgentRunner 后才产生不明确异常。
+// Validates factory result with minimal runtime shape to prevent misconfigurations from producing ambiguous exceptions after reaching AgentRunner.
 function isModelClient(value: unknown): value is ModelClient {
   return (
     typeof value === "object" &&

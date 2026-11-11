@@ -1,4 +1,4 @@
-// teammate 运行时：以独立 AgentRunner 和身份管理持久队友，并通过 mailbox/EventInbox 与 Lead 协作；P16 增加协议消息路由与优雅关闭。
+// Teammate runtime: manages persistent teammates with independent AgentRunners and identities, collaborating with Lead via mailbox/EventInbox; P16 adds protocol message routing and graceful shutdown.
 import type { EventInbox, RuntimeEvent } from "../core/events.js";
 import { isRuntimeEvent } from "../core/events.js";
 import { AgentRunner } from "../core/loop.js";
@@ -27,7 +27,7 @@ import type { ProtocolRuntime } from "./protocol.js";
 export const LEAD_NAME = "lead";
 
 export const TeammateStatus = Object.freeze({
-  // 状态机只描述当前进程内队友生命周期；failed/shutdown 后不再接收新消息。
+  // The state machine only describes the teammate lifecycle within the current process; it stops receiving new messages after failed or shutdown.
   Running: "running",
   Idle: "idle",
   Failed: "failed",
@@ -35,7 +35,7 @@ export const TeammateStatus = Object.freeze({
 });
 export type TeammateStatus = (typeof TeammateStatus)[keyof typeof TeammateStatus];
 
-// 队友运行时错误统一携带稳定 errorCode，工具边界据此返回结构化失败。
+// Teammate runtime errors uniformly carry stable errorCode; tool boundaries return structured failures accordingly.
 export class TeammateError extends Error {
   readonly errorCode: string;
 
@@ -46,28 +46,28 @@ export class TeammateError extends Error {
   }
 }
 export class TeammateExistsError extends TeammateError {
-  // 同名队友只允许注册一次，重复 spawn 必须可区分，不能静默覆盖。
+  // Teammates with the same name can register only once; duplicate spawns must be distinguishable and cannot overwrite silently.
   constructor(message: string) {
     super("teammate_exists", message);
     this.name = "TeammateExistsError";
   }
 }
 export class TeammateNotFoundError extends TeammateError {
-  // 发消息到未注册的队友时显式失败，避免把消息写入一个不存在的收件箱。
+  // Fail explicitly when sending messages to an unregistered teammate, preventing writes to nonexistent inboxes.
   constructor(message: string) {
     super("teammate_not_found", message);
     this.name = "TeammateNotFoundError";
   }
 }
 export class TeammateStateError extends TeammateError {
-  // 配置或生命周期状态不合法时立即失败，不等待后台 worker 再暴露问题。
+  // Fails immediately when configuration or lifecycle state is invalid, rather than waiting for background workers to expose problems.
   constructor(message: string) {
     super("teammate_state", message);
     this.name = "TeammateStateError";
   }
 }
 export class TeammateClosedError extends TeammateError {
-  // 关闭后的 runtime 不再接受 spawn/send/start，防止资源释放后继续写 mailbox。
+  // Runtime rejects spawn/send/start after shutdown to prevent writing to mailbox after resources are released.
   constructor(message: string) {
     super("teammate_closed", message);
     this.name = "TeammateClosedError";
@@ -75,15 +75,15 @@ export class TeammateClosedError extends TeammateError {
 }
 
 export interface Teammate {
-  // 规范 Agent slug，同时作为 mailbox recipient 和 ToolContext.identity。
+  // Canonical Agent slug, serving as both mailbox recipient and ToolContext.identity.
   readonly name: string;
-  // 创建时固定的职责描述，用于构造独立 Runner 提示。
+  // Responsibility description fixed at creation, used to build independent Runner prompts.
   readonly role: string;
-  // 当前进程内 worker 状态快照；状态变化时整体替换。
+  // In-process worker state snapshot; replace as a whole when state changes.
   readonly status: TeammateStatus;
 }
 
-// 工厂为每名队友创建独立历史的 AgentRunner，并注入受控消息与协议工具。
+// The factory creates an AgentRunner with independent history for each teammate, injecting controlled message and protocol tools.
 export type TeammateRunnerFactory = (
   name: string,
   role: string,
@@ -91,53 +91,53 @@ export type TeammateRunnerFactory = (
 ) => AgentRunner;
 
 interface Worker {
-  // 对外可观察的不可变队友快照。
+  // Externally observable immutable teammate snapshot.
   teammate: Teammate;
-  // 该队友独占的 AgentRunner 和 canonical history。
+  // AgentRunner and canonical history dedicated to this teammate.
   readonly runner: AgentRunner;
-  // supervisor 下的受管任务；undefined 表示当前没有在途循环。
+  // Managed task under supervisor; undefined indicates no in-flight loop currently.
   task: Promise<void> | undefined;
-  // 当前 processing 租约；关闭或取消时必须 release 回 ready。
+  // Current processing lease; must release back to ready on close or cancel.
   currentMessage: MailboxItem | undefined;
-  // 当前 worker 循环的取消控制器，与 supervisor signal 衔接。
+  // Cancellation controller for the current worker loop, connecting with supervisor signals.
   abort: AbortController | undefined;
-  // 消息租约和 Runner 都成功清理后才为 true，支持 close 重试。
+  // Returns true only after both the message lease and Runner are cleaned up successfully, supporting close retry.
   closeComplete: boolean;
-  // 取消阶段无法 release 消息时暂存，交给 close 汇总报告。
+  // Buffer messages that cannot be released during cancellation, delegating to close for aggregated reporting.
   cleanupFailure: unknown | undefined;
 }
 
-// 每名队友拥有独立 AgentRunner 和身份；共享资源仅限 mailbox、事件 Inbox 与调度器。
+// Each teammate has an independent AgentRunner and identity; shared resources are limited to mailbox, event Inbox, and scheduler.
 export class TeammateRuntime {
-  // 普通与协议消息共享的持久 MailboxStore。
+  // Persistent MailboxStore shared by normal and protocol messages.
   readonly #store: MailboxStore;
-  // Lead 事件发布目标，与 CronRuntime 使用同一个实例。
+  // Lead event publication target, sharing the same instance with CronRuntime.
   readonly #inbox: EventInbox;
-  // 所有队友 worker 都作为该 supervisor 的受管任务运行。
+  // All teammate workers run as managed tasks of this supervisor.
   readonly #supervisor: JobSupervisor;
-  // 统一实现事件 drain/wait/ack 和 wakeup 排序。
+  // Uniformly implement event drain, wait, ack, and wakeup ordering.
   readonly #cronRuntime: CronRuntime;
-  // 规范化 Lead 名称，默认固定为 lead。
+  // Normalized Lead name, fixed to lead by default.
   readonly #leadName: string;
-  // 仅保存当前进程已创建的队友及其独立 Runner。
+  // Stores only teammates created in the current process and their independent Runners.
   readonly #workers = new Map<string, Worker>();
-  // 记录已发布到 EventInbox 的 mailbox 事件，避免确认失败重投时重复排队。
+  // Record mailbox events published to EventInbox to avoid duplicate queueing when redelivered on confirmation failure.
   readonly #queuedMessageIds = new Set<string>();
-  // Lead 暴露给模型的创建队友工具定义。
+  // Tool definition exposed to the model by Lead to spawn teammates.
   readonly #spawnToolDefinition: ToolDefinition<SpawnTeammateInput>;
-  // Lead 与队友共享的普通消息工具定义。
+  // Normal message tool definition shared between Lead and teammates.
   readonly #sendToolDefinition: ToolDefinition<SendMessageInput>;
-  // 协议运行时与队友共享同一 store，负责 Lead 侧消息校验与 ack 状态消费。
+  // The protocol runtime shares the same store with teammates, handling Lead-side message validation and ack state consumption.
   #protocolRuntime: ProtocolRuntime | undefined;
-  // start 前注入，为每名队友创建带独立历史的 Runner。
+  // Injected before start to create a Runner with independent history for each teammate.
   #runnerFactory: TeammateRunnerFactory | undefined;
-  // 发布 Lead 新事件后触发组合根安排事件回合。
+  // Trigger the composition root to schedule an event turn after publishing new Lead events.
   #wakeup: (() => Promise<void>) | undefined;
-  // 串行化队友注册、普通发送和协议投递。
+  // Serializes teammate registration, normal sends, and protocol delivery.
   #registryTail: Promise<void> = Promise.resolve();
-  // start 完成后才允许 spawn/send/deliverProtocol。
+  // spawn/send/deliverProtocol are permitted only after start completes.
   #started = false;
-  // close 一开始即封闭新操作，清理失败可再次 close 重试。
+  // close blocks new operations from the start; if cleanup fails, call close again to retry.
   #closed = false;
 
   constructor(options: {
@@ -147,7 +147,7 @@ export class TeammateRuntime {
     readonly cronRuntime: CronRuntime;
     readonly leadName?: string;
   }) {
-    // 组合根必须把 supervisor、Cron 与 EventInbox 注入到同一个运行时，否则事件流会分裂。
+    // The composition root must inject supervisor, Cron, and EventInbox into the same runtime; otherwise the event stream splits.
     if (
       options.store === undefined ||
       typeof options.store.send !== "function" ||
@@ -184,43 +184,43 @@ export class TeammateRuntime {
   }
 
   get supervisor(): JobSupervisor {
-    // 组合根复用同一 supervisor，使后台作业与队友 worker 共享关闭顺序。
+    // The composition root reuses the same supervisor so background jobs and teammate workers share shutdown ordering.
     return this.#supervisor;
   }
   get eventInbox(): EventInbox {
-    // 队友结果与 Cron 事件进入同一事件泵，避免平行历史写入路径。
+    // Teammate results and Cron events enter the same event pump to prevent parallel history write paths.
     return this.#inbox;
   }
   get cronRuntime(): CronRuntime {
-    // drain/wait/ack 委托给共享 CronRuntime，保留统一事件排序。
+    // Delegate drain/wait/ack to shared CronRuntime to preserve unified event ordering.
     return this.#cronRuntime;
   }
   get mailboxStore(): MailboxStore {
-    // 协议与普通消息必须共用该 Store，保持单一租约状态机。
+    // Protocol and ordinary messages must share this Store to maintain a single lease state machine.
     return this.#store;
   }
   get hasPendingWork(): boolean {
-    // CronRuntime 汇总 EventInbox 与调度状态，是事件泵的单一待办判断。
+    // CronRuntime aggregates EventInbox and schedule state, serving as the single TODO check for the event pump.
     return this.#cronRuntime.hasPendingWork;
   }
   get toolDefinitions(): readonly (
     | ToolDefinition<SpawnTeammateInput>
     | ToolDefinition<SendMessageInput>
   )[] {
-    // 保持工具顺序稳定；P16 协议工具由组合根按身份分别追加。
+    // Keeps tool order stable; composition root appends P16 protocol tools separately by identity.
     return Object.freeze([this.#spawnToolDefinition, this.#sendToolDefinition]);
   }
   get spawnToolDefinition(): ToolDefinition<SpawnTeammateInput> {
-    // 组合根按能力位注册，不暴露内部可变定义。
+    // The composition root registers by capability bits without exposing internal mutable definitions.
     return this.#spawnToolDefinition;
   }
   get sendToolDefinition(): ToolDefinition<SendMessageInput> {
-    // sender 始终由 ToolContext 注入，工具输入不能伪造来源。
+    // ToolContext always injects sender; tool input cannot forge message sources.
     return this.#sendToolDefinition;
   }
 
   configureRunnerFactory(factory: TeammateRunnerFactory): void {
-    // 工厂只能启动前绑定一次，防止既有和新建队友使用不同契约。
+    // Factories can bind only once before startup, preventing existing and newly created teammates from using different contracts.
     if (typeof factory !== "function") throw new TypeError("factory must be a function");
     if (this.#runnerFactory !== undefined || this.#started) {
       throw new TeammateStateError("Teammate runner factory must be configured once before start");
@@ -229,7 +229,7 @@ export class TeammateRuntime {
   }
 
   configureProtocol(runtime: ProtocolRuntime): void {
-    // 协议 runtime 必须与队友共享同一 MailboxStore，并且只能在启动前配置一次。
+    // The protocol runtime must share the same MailboxStore with teammates, and can be configured only once before startup.
     if (runtime.teamRuntime !== this || runtime.mailboxStore !== this.#store) {
       throw new TeammateStateError("Protocol runtime must share this teammate runtime and mailbox");
     }
@@ -240,13 +240,13 @@ export class TeammateRuntime {
   }
 
   bindWakeup(wakeup: () => Promise<void>): void {
-    // wakeup 由组合根绑定，用于有新 Lead 事件时启动独立事件回合。
+    // Composition root binds wakeup to start an independent event turn when new Lead events arrive.
     if (typeof wakeup !== "function") throw new TypeError("wakeup must be a function");
     this.#wakeup = wakeup;
   }
 
   async start(): Promise<void> {
-    // 启动 Lead 前先恢复旧 processing 消息，再发布到 EventInbox，避免崩溃消息停留在租约中。
+    // Recover stale processing messages before starting Lead, then publish to EventInbox to prevent crash messages from lingering in leases.
     if (this.#closed) throw new TeammateClosedError("TeammateRuntime is closed");
     if (this.#runnerFactory === undefined) {
       throw new TeammateStateError("Teammate runner factory is not configured");
@@ -258,26 +258,26 @@ export class TeammateRuntime {
   }
 
   async ready(): Promise<void> {
-    // AgentRunner 拉取事件前调用，确保 Lead ready 消息已发布。
+    // Called before AgentRunner pulls events to ensure the Lead ready message is published.
     await this.start();
   }
 
   state(name: string): Teammate {
-    // 状态查询只读 Map，不启动 worker，也不产生 mailbox 副作用。
+    // State queries only read the Map, do not start workers, and do not produce mailbox side effects.
     const worker = this.#workers.get(canonicalAgentName(name));
     if (worker === undefined) throw new TeammateNotFoundError(`Unknown teammate: ${name}`);
     return worker.teammate;
   }
 
   beginShutdown(name: string): void {
-    // shutdown 状态先于响应投递设置，让后续协议投递无法再发给该队友。
+    // shutdown state is set before response delivery, preventing subsequent protocol deliveries to this teammate.
     const worker = this.#workers.get(canonicalAgentName(name));
     if (worker === undefined) throw new TeammateNotFoundError(`Unknown teammate: ${name}`);
     this.#setStatus(worker, TeammateStatus.Shutdown);
   }
 
   async spawn(input: SpawnTeammateInput & { readonly sender: string }): Promise<Teammate> {
-    // 先恢复队友遗留的 processing 消息，再发送首个 task，保证旧消息不会和新消息竞争丢失。
+    // Recovers processing messages left by teammates first before sending first task, ensuring old messages do not race with new messages and get lost.
     this.#ensureAvailable();
     const name = canonicalAgentName(input.name);
     const sender = canonicalAgentName(input.sender);
@@ -342,7 +342,7 @@ export class TeammateRuntime {
       }
       const sent = await this.#store.send(sender, to, content, MailboxMessageKind.Message);
       if (worker !== undefined && worker.teammate.status === TeammateStatus.Idle) {
-        // idle 只表示 worker 已结束本轮循环；收到新消息时复用原 Runner 并重新拉取 mailbox。
+        // idle only indicates the worker finished this cycle; on new messages, reuse the existing Runner and re-fetch mailbox.
         this.#setStatus(worker, TeammateStatus.Running);
         this.#startWorker(worker);
       }
@@ -352,7 +352,7 @@ export class TeammateRuntime {
     return message;
   }
 
-  // 协议投递共享注册表串行化，只发给已注册且状态可接收的队友或 Lead。
+  // Protocol delivery shares registry serialization and only sends to registered teammates or Lead ready to receive.
   async deliverProtocol(
     sender: string,
     recipient: string,
@@ -364,7 +364,7 @@ export class TeammateRuntime {
       readonly signal?: AbortSignal;
     },
   ): Promise<ProtocolMailboxMessage> {
-    // abort 在持久化前后各检查一次，取消后不得继续唤醒参与者。
+    // Check abort before and after persistence; do not wake participants after cancellation.
     this.#ensureAvailable();
     if (!isProtocolMailboxStore(this.#store)) {
       throw new TeammateStateError("Mailbox store does not support protocol messages");
@@ -402,19 +402,19 @@ export class TeammateRuntime {
   }
 
   drainEvents(limit?: number): readonly RuntimeEvent[] {
-    // 事件出队即清除 queued 标记，确保 ack 失败后重新发布仍能被 Runner 识别为重试。
+    // Clears the queued flag when an event dequeues to ensure republishing after ack failure is recognized as a retry by Runner.
     const events = this.#cronRuntime.drainEvents(limit);
     this.#markMailboxEventsDequeued(events);
     return events;
   }
   async waitForEvents(limit?: number): Promise<readonly RuntimeEvent[]> {
-    // 等待路径与 drain 路径共用同一去重逻辑，不能让等待中的事件永久占据 queued 标记。
+    // The wait path and drain path share deduplication logic; waiting events must not occupy the queued flag indefinitely.
     const events = await this.#cronRuntime.waitForEvents(limit);
     this.#markMailboxEventsDequeued(events);
     return events;
   }
   async acknowledgeEvents(events: readonly RuntimeEvent[]): Promise<void> {
-    // 协议事件先消费 ProtocolStore 状态再 ack transport；普通消息直接 ack。
+    // Protocol events consume ProtocolStore state before transport ack; ordinary messages ack directly.
     if (!Array.isArray(events) || !events.every((event) => isRuntimeEvent(event))) {
       throw new TypeError("events must contain RuntimeEvent values");
     }
@@ -433,7 +433,7 @@ export class TeammateRuntime {
           throw new MailboxStorageError(`Mailbox message is not processing: ${mailboxEvent.id}`);
         }
       } catch (error) {
-        // 确认失败时把同一事件重新发布，Runner 会按 event_id 去重，避免已写入 history 的消息丢失。
+        // Republish the same event on confirmation failure; Runner deduplicates by event_id to prevent losing messages written to history.
         if (!this.#queuedMessageIds.has(mailboxEvent.id)) {
           this.#inbox.publish(mailboxEvent);
           this.#queuedMessageIds.add(mailboxEvent.id);
@@ -444,7 +444,7 @@ export class TeammateRuntime {
     }
   }
 
-  // 关闭按 worker 收束、资源释放顺序执行，确保未确认消息不会被静默丢弃。
+  // Shutdown proceeds in order of worker termination and resource release, ensuring unacknowledged messages are not dropped silently.
   async close(): Promise<void> {
     if (this.#closed && [...this.#workers.values()].every((worker) => worker.closeComplete)) return;
     this.#closed = true;
@@ -487,7 +487,7 @@ export class TeammateRuntime {
     if (failures.length > 1) throw new AggregateError(failures, "TeammateRuntime close failed");
   }
 
-  // 工具边界只返回可观察的错误，不向 Agent 暴露内部栈。
+  // Tool boundaries return observable errors only, without exposing internal stacks to the Agent.
   async #spawnTool(input: SpawnTeammateInput, context: ToolContext): Promise<ToolResult> {
     try {
       const teammate = await this.spawn({ ...input, sender: context.identity });
@@ -496,7 +496,7 @@ export class TeammateRuntime {
       return toolError(errorCode(error, "teammate_spawn_error"), errorMessage(error));
     }
   }
-  // sender 由 ToolContext.identity 注入，工具输入不能伪造消息来源。
+  // ToolContext.identity injects sender; tool input cannot forge message sources.
   async #sendTool(input: SendMessageInput, context: ToolContext): Promise<ToolResult> {
     try {
       const message = await this.send({ ...input, sender: context.identity });
@@ -507,7 +507,7 @@ export class TeammateRuntime {
   }
 
   #startWorker(worker: Worker): void {
-    // 每个 worker 都作为 supervisor 下的受管任务运行，supervisor 负责统一追踪和关闭。
+    // Each worker runs as a managed task under the supervisor, which handles unified tracking and shutdown.
     if (worker.task !== undefined) return;
     const abort = new AbortController();
     worker.abort = abort;
@@ -534,7 +534,7 @@ export class TeammateRuntime {
   }
 
   async #runWorker(worker: Worker, signal: AbortSignal): Promise<void> {
-    // claim 即获取租约：成功后当前消息进入 processing，直到 ack/release/quarantine。
+    // claim acquires a lease: on success, the current message enters processing until ack/release/quarantine.
     try {
       while (!this.#closed) {
         const message = await this.#store.claim(worker.teammate.name);
@@ -545,10 +545,10 @@ export class TeammateRuntime {
         worker.currentMessage = message;
         this.#setStatus(worker, TeammateStatus.Running);
         try {
-          // 同一消息 UUID 作为本轮 idempotency key，外部工具可以据此去重。
+          // The same message UUID serves as this turn's idempotency key, allowing external tools to deduplicate.
           let finalText: string;
           if (isProtocolMailboxMessage(message)) {
-            // 协议消息在模型调用前完成路由；shutdown 直接终止，plan response 才生成模型 prompt。
+            // Route protocol messages before model calls; shutdown terminates directly, and only plan responses generate model prompts.
             const runtime = this.#protocolRuntime;
             if (runtime === undefined)
               throw new TeammateStateError("Protocol runtime is not configured");
@@ -570,7 +570,7 @@ export class TeammateRuntime {
               })
             ).finalText;
           } else {
-            // 普通消息直接把 content 交给队友 Runner。
+            // Normal messages pass content directly to the teammate Runner.
             finalText = (
               await worker.runner.run(message.content, {
                 idempotencyKey: message.id,
@@ -584,14 +584,14 @@ export class TeammateRuntime {
             finalText,
             MailboxMessageKind.Result,
           );
-          // 队友结果写回 Lead 后再 ack 原消息，结果和租约释放不会互相丢失。
+          // Acks original message after teammate results are written back to Lead, so neither results nor lease releases are lost.
           if (!(await this.#store.ack(message))) {
             throw new MailboxStorageError(`Mailbox message is not processing: ${message.id}`);
           }
           worker.currentMessage = undefined;
         } catch (error) {
           if (this.#closed || signal.aborted) {
-            // 关闭或取消时不 quarantine，而是 release 回 ready，保留崩溃后重放的机会。
+            // Releases back to ready instead of quarantining on close or cancel, preserving the chance to replay after crashes.
             try {
               if (!(await this.#store.release(message))) {
                 throw new MailboxStorageError(`Mailbox message is not processing: ${message.id}`);
@@ -607,7 +607,7 @@ export class TeammateRuntime {
             return;
           }
           if (isProtocolMailboxMessage(message) && !isProtocolQuarantineError(error)) {
-            // 非协议类错误不 quarantine，release 后让 worker 失败，保留消息供诊断后重放。
+            // Non-protocol errors are not quarantined; worker fails after release, keeping messages for replay after diagnostics.
             if (!(await this.#store.release(message))) {
               throw new MailboxStorageError(`Mailbox message is not processing: ${message.id}`);
             }
@@ -615,7 +615,7 @@ export class TeammateRuntime {
             throw error;
           }
           if (!(await this.#store.quarantine(message))) {
-            // 业务失败把输入隔离到 quarantine，并向 Lead 发布可观察的失败 result。
+            // Business failures isolate input into quarantine and publish an observable failure result to Lead.
             throw new MailboxStorageError(`Mailbox message is not processing: ${message.id}`);
           }
           worker.currentMessage = undefined;
@@ -623,7 +623,7 @@ export class TeammateRuntime {
           throw error;
         }
         this.#setStatus(worker, TeammateStatus.Idle);
-        // 完成一轮后主动通知 Lead，让 run_events 有机会立即消费结果。
+        // Actively notify the Lead after completing a turn, giving run_events the opportunity to consume results immediately.
         await this.#notifyLead();
       }
       this.#setStatus(worker, TeammateStatus.Shutdown);
@@ -642,18 +642,18 @@ export class TeammateRuntime {
         );
         await this.#notifyLead();
       } catch {
-        // 错误结果无法再持久化时，状态仍保留为 failed 供调用方观察。
+        // When error results cannot be persisted further, state remains failed for callers to observe.
       }
     }
   }
 
   async #notifyLead(): Promise<void> {
-    // 只有发布了新事件才唤醒事件回合，空扫描不制造模型调用。
+    // Wake event turns only when new events are published; empty scans do not produce model calls.
     const published = await this.#publishLeadMessages();
     if (published && this.#wakeup !== undefined) await this.#wakeup();
   }
   async #publishLeadMessages(): Promise<boolean> {
-    // 发布阶段持续 claim 直到 lead mailbox 为空；每次 claim 都会把消息置于 processing。
+    // Keep claiming during the publish phase until the lead mailbox is empty; each claim moves the message to processing.
     let published = false;
     while (true) {
       const message = await this.#store.claim(this.#leadName);
@@ -670,7 +670,7 @@ export class TeammateRuntime {
         try {
           await runtime.validateLeadMessage(message);
         } catch (error) {
-          // Lead 协议消息先只读校验：协议无效则 quarantine，其他故障 release 后交给上层重试。
+          // Lead protocol messages validate read-only first: quarantine if protocol is invalid, release other failures for upper-layer retry.
           if (!isProtocolQuarantineError(error)) {
             await this.#store.release(message);
             throw error;
@@ -687,14 +687,14 @@ export class TeammateRuntime {
     }
   }
   #markMailboxEventsDequeued(events: readonly RuntimeEvent[]): void {
-    // 出队只释放进程内去重标记；持久 processing 状态仍等 ack 处理。
+    // Dequeue releases in-process deduplication flag only; durable processing state still awaits ack handling.
     for (const event of events) {
       if (!(isMailboxMessage(event) || isProtocolMailboxMessage(event))) continue;
       this.#queuedMessageIds.delete((event as MailboxItem).id);
     }
   }
   #assertParticipant(name: string, allowShutdown = false): void {
-    // Lead 始终可收；普通队友必须存在且未 failed/shutdown，shutdown 响应允许发给已进入关闭流程的队友。
+    // Lead can always receive; normal teammates must exist and not be failed/shutdown; shutdown responses may be sent to teammates already shutting down.
     if (name === this.#leadName) return;
     const worker = this.#workers.get(name);
     if (worker === undefined) throw new TeammateNotFoundError(`Unknown teammate: ${name}`);
@@ -708,7 +708,7 @@ export class TeammateRuntime {
     }
   }
   #setStatus(worker: Worker, status: TeammateStatus): void {
-    // 状态变化通过替换冻结快照完成，外部引用不会被就地修改。
+    // State changes by replacing the frozen snapshot; external references are not modified in place.
     worker.teammate = snapshot(worker.teammate.name, worker.teammate.role, status);
   }
   #ensureAvailable(): void {
@@ -716,7 +716,7 @@ export class TeammateRuntime {
     if (!this.#started) throw new TeammateStateError("TeammateRuntime is not started");
   }
   async #withRegistry<T>(operation: () => Promise<T>): Promise<T> {
-    // 进程内 promise 队列串行化注册、发送和协议投递，避免并发操作造成队友集合不一致。
+    // In-process promise queue serializes registration, sending, and protocol delivery to prevent concurrent operations from causing teammate set inconsistencies.
     const previous = this.#registryTail;
     let release!: () => void;
     this.#registryTail = new Promise<void>((resolve) => {
@@ -732,31 +732,31 @@ export class TeammateRuntime {
 }
 
 function snapshot(name: string, role: string, status: TeammateStatus): Teammate {
-  // 每次迁移返回新冻结对象，使观察者不会看到半更新字段。
+  // Return newly frozen objects on each transition so observers do not see partially updated fields.
   return Object.freeze({ name, role, status });
 }
 function requireText(value: string, label: string): string {
-  // Mailbox 与协议正文统一拒绝空白，避免生成不可执行回合。
+  // Mailbox and protocol bodies reject whitespace uniformly to prevent generating non-executable turns.
   if (typeof value !== "string" || value.trim().length === 0)
     throw new Error(`${label} must not be empty`);
   return value.trim();
 }
 function isMailboxMessage(value: RuntimeEvent): value is MailboxMessage {
-  // 普通与协议事件都使用 kind=mailbox；该守卫只收窄 P15 普通消息。
+  // Both normal and protocol events use kind=mailbox; this guard only narrows P15 normal messages.
   return value.toPayload().kind === "mailbox" && "id" in value;
 }
 function errorCode(error: unknown, fallback: string): string {
-  // 领域错误保留 errorCode，其他异常统一使用工具边界 fallback，避免泄露内部异常类型。
+  // Domain errors retain errorCode; other exceptions uniformly use tool boundary fallback to prevent leaking internal exception types.
   return error instanceof TeammateError || error instanceof MailboxStorageError
     ? error.errorCode
     : fallback;
 }
 function errorMessage(error: unknown): string {
-  // 错误转字符串时只取稳定 message，不把完整堆栈写入工具结果。
+  // Only stable message is taken when converting error to string, without writing full stack traces into tool results.
   return error instanceof Error ? error.message : String(error);
 }
 function isProtocolQuarantineError(error: unknown): boolean {
-  // 只有协议不匹配、不存在、过期或状态错误才隔离；其他错误交给外层恢复逻辑。
+  // Quarantine only on protocol mismatch, non-existence, expiration, or state errors; delegate other errors to outer recovery logic.
   if (!(error instanceof Error)) return false;
   const code = Reflect.get(error, "errorCode");
   return (

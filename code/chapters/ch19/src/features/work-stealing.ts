@@ -1,4 +1,4 @@
-// 任务认领与完成能力：Lead、子代理和持续 Teammate 通过同一 SQLite store 与 claim service 操作任务，避免各自读写独立状态。
+// Task claim and completion capabilities: Lead, subagents, and continuous teammates operate on tasks via the same SQLite store and claim service, avoiding independent state reads and writes.
 import { z } from "zod";
 
 import type { ToolContext, ToolDefinition, ToolRegistry, ToolResult } from "../core/tools.js";
@@ -19,7 +19,7 @@ const listTasksSchema = z.strictObject({});
 const completeTaskSchema = z.strictObject({ task_id: uuidSchema, claim_token: uuidSchema });
 
 export class TaskClaimError extends TaskError {
-  // 表示调用方提交的 owner/token 与当前租约不匹配，可稳定映射为工具错误码。
+  // Indicates caller-submitted owner/token does not match current lease, reliably mapping to a tool error code.
   constructor(message: string, code = "task_claim_mismatch") {
     super(code, message);
     this.name = "TaskClaimError";
@@ -27,7 +27,7 @@ export class TaskClaimError extends TaskError {
 }
 
 export class TaskLeaseExpiredError extends TaskClaimError {
-  // 单独区分“曾经有效但已过期”，便于模型重新认领而不是重复完成。
+  // Explicitly distinguish "previously valid but expired" so the model re-claims instead of repeatedly completing.
   constructor(message: string) {
     super(message, "task_lease_expired");
     this.name = "TaskLeaseExpiredError";
@@ -35,14 +35,14 @@ export class TaskLeaseExpiredError extends TaskClaimError {
 }
 
 export interface TaskClaim {
-  // claimToken 是完成权限证明，owner 相同也不能用旧租约完成被重新认领的任务。
+  // claimToken proves completion permission; even with the same owner, old leases cannot complete a re-claimed task.
   readonly task: Task;
   readonly claimToken: string;
   readonly leaseExpiresAtUtc: Date;
 }
 
 export interface LeasedTaskStore {
-  // 存储层负责 DAG、租约与 token 的原子语义，工具层不直接拼接持久化操作。
+  // The storage layer handles atomic semantics for DAG, leases, and tokens; the tool layer does not splice persistence operations directly.
   createTask(input: CreateTaskInput): Promise<Task>;
   getTask(taskId: string): Promise<Task>;
   listTasks(): Promise<readonly Task[]>;
@@ -52,34 +52,34 @@ export interface LeasedTaskStore {
 }
 
 export interface TaskClaimService {
-  // service 将执行身份绑定到存储 owner，阻止模型通过工具参数伪造其他 Agent。
+  // service binds execution identity to storage owner, preventing models forging other Agents via tool arguments.
   readonly store: LeasedTaskStore;
   claimTask(taskId: string, context: ToolContext): Promise<TaskClaim>;
   claimNext(owner: string): Promise<TaskClaim | undefined>;
   completeTask(taskId: string, claimToken: string, context: ToolContext): Promise<TaskCompletion>;
 }
 
-// 默认服务把 ToolContext.identity 映射为 owner，不让工具输入伪造认领者。
+// Default service maps ToolContext.identity to owner, preventing tool inputs from forging claim owners.
 class DirectTaskClaimService implements TaskClaimService {
   readonly #store: LeasedTaskStore;
 
   constructor(store: LeasedTaskStore) {
-    // service 不复制状态，只持有组合根提供的唯一 store 引用。
+    // service does not copy state; it holds only the single store reference provided by the composition root.
     this.#store = store;
   }
 
   get store(): LeasedTaskStore {
-    // 暴露引用身份供 WorkStealingRuntime 拒绝错误配对的 service。
+    // Expose reference identity for WorkStealingRuntime to reject mismatched services.
     return this.#store;
   }
 
   async claimTask(taskId: string, context: ToolContext): Promise<TaskClaim> {
-    // 手动工具认领的 owner 固定取自 ToolContext.identity。
+    // Owners for manual tool claims are fixed from ToolContext.identity.
     return await this.#store.claimTask(taskId, context.identity);
   }
 
   async claimNext(owner: string): Promise<TaskClaim | undefined> {
-    // 自动扫描不是模型工具调用，owner 由调用方直接传入；它不经过 ToolContext，模型也不能伪造。
+    // Automatic scanning is not a model tool call; callers pass owner directly, bypassing ToolContext and preventing model forgery.
     return await this.#store.claimNext(owner);
   }
 
@@ -88,27 +88,27 @@ class DirectTaskClaimService implements TaskClaimService {
     claimToken: string,
     context: ToolContext,
   ): Promise<TaskCompletion> {
-    // 完成同样从上下文绑定 owner，并要求模型回传当前 claim token。
+    // Completion also binds owner from context and requires the model to return the current claim token.
     return await this.#store.completeTask(taskId, context.identity, claimToken);
   }
 }
 
 export interface WorkStealingSleeper {
-  // wakeup 可由新消息、协议事件或关闭流程中断，避免 worker 必须等满轮询周期。
+  // New messages, protocol events, or shutdown workflows can interrupt wakeup to avoid workers waiting for the entire polling cycle.
   sleep(seconds: number, wakeup: AbortSignal): Promise<void>;
 }
 
-// Lead 使用完整五工具元组；Teammate 通过切片移除 create_task。
+// Lead uses the full five-tool tuple; Teammate removes create_task via slicing.
 type LeasedToolDefinitions = ReturnType<typeof leasedTaskToolDefinitions>;
 type TeammateLeasedToolDefinitions = readonly LeasedToolDefinitions[number][];
 
-// AsyncioWorkStealingSleeper 默认 sleeper 使用 timer + abort 监听，避免空闲轮询无法被关闭流程中断。
+// AsyncioWorkStealingSleeper default sleeper uses timer + abort listener to prevent idle polling from blocking shutdown.
 export class AsyncioWorkStealingSleeper implements WorkStealingSleeper {
   async sleep(seconds: number, wakeup: AbortSignal): Promise<void> {
-    // 已触发的 wakeup 直接返回，避免遗漏绑定监听前发生的唤醒。
+    // Return directly if wakeup has triggered, avoiding missing wakeups that occurred before binding listeners.
     if (wakeup.aborted) return;
     await new Promise<void>((resolve) => {
-      // 同时监听 timer 和 abort：新消息到达时提前结束等待，避免 idle worker 卡满 5 秒。
+      // Listen to timer and abort simultaneously: end waiting early when new messages arrive, preventing idle workers from blocking for a full 5 seconds.
       const timer = setTimeout(finish, seconds * 1000);
       const onAbort = (): void => {
         clearTimeout(timer);
@@ -124,9 +124,9 @@ export class AsyncioWorkStealingSleeper implements WorkStealingSleeper {
   }
 }
 
-// WorkStealingRuntime 封装任务认领/完成、轮询参数与工具定义，让 bootstrap 只关注能力组合而无需介入认领细节。
+// WorkStealingRuntime encapsulates task claim/completion, polling parameters, and tool definitions, so bootstrap only composes capabilities without claim details.
 export class WorkStealingRuntime {
-  // 运行时只通过共享 TaskClaimService 认领与完成，避免多队友直接竞争存储细节。
+  // The runtime claims and completes tasks only through shared TaskClaimService, preventing multiple teammates from competing directly for storage details.
   readonly #store: LeasedTaskStore;
   readonly #claimService: TaskClaimService;
   readonly #sleeper: WorkStealingSleeper;
@@ -142,14 +142,14 @@ export class WorkStealingRuntime {
     readonly pollIntervalSeconds?: number;
     readonly maxIdlePolls?: number;
   }) {
-    // 构造时冻结 store/service/轮询策略和工具快照，运行中不允许热切换认领语义。
+    // Freeze store, service, polling policy, and tool snapshot at construction; hot-swapping claim semantics at runtime is disallowed.
     if (!isLeasedTaskStore(options.store))
       throw new TypeError("store must implement LeasedTaskStore");
     const claimService =
       options.claimService === undefined
         ? new DirectTaskClaimService(options.store)
         : options.claimService;
-    // claimService 必须指向同一个 store，否则 Lead 与 Teammate 可能操作两个数据库。
+    // claimService must point to the same store; otherwise Lead and Teammate might operate on two databases.
     if (!isTaskClaimService(claimService))
       throw new TypeError("claimService must implement TaskClaimService");
     if (claimService.store !== options.store) {
@@ -172,49 +172,49 @@ export class WorkStealingRuntime {
     this.#sleeper = sleeper;
     this.#pollIntervalSeconds = pollIntervalSeconds;
     this.#maxIdlePolls = maxIdlePolls;
-    // 同一份五工具先整体给 Lead；Teammate 从索引 1 开始，只暴露读取、认领和完成。
+    // The same five tools are provided to Lead; Teammates start at index 1, exposing only read, claim, and complete.
     const definitions = leasedTaskToolDefinitions(this.#store, this.#claimService);
     this.#leadToolDefinitions = definitions;
     this.#teammateToolDefinitions = Object.freeze(definitions.slice(1));
   }
 
   get store(): LeasedTaskStore {
-    // 暴露同一实例供 bootstrap 校验 Lead、Subagent 与 Teammate 没有分叉存储。
+    // Expose the same instance for bootstrap to verify Lead, Subagent, and Teammate do not fork storage.
     return this.#store;
   }
 
   get claimService(): TaskClaimService {
-    // 工具注册和自动认领必须复用同一身份绑定服务。
+    // Tool registration and automatic claims must reuse the same identity binding service.
     return this.#claimService;
   }
 
   get maxIdlePolls(): number {
-    // TeammateRuntime 用该上限决定连续空轮询何时结束 worker。
+    // TeammateRuntime uses this ceiling to decide when consecutive empty polls terminate the worker.
     return this.#maxIdlePolls;
   }
 
   get leadToolDefinitions(): LeasedToolDefinitions {
-    // Lead 可创建、查询、认领和完成任务。
+    // Lead can create, query, claim, and complete tasks.
     return this.#leadToolDefinitions;
   }
 
   get teammateToolDefinitions(): TeammateLeasedToolDefinitions {
-    // 持续队友只能处理既有任务，不能在空闲循环中扩张任务图。
+    // Persistent teammates can only process existing tasks. They cannot expand the task graph in idle loops.
     return this.#teammateToolDefinitions;
   }
 
   async claimNext(owner: string): Promise<TaskClaim | undefined> {
-    // 自动认领 owner 来自 worker 身份，不经过模型工具输入。
+    // Auto-claim owner comes from the worker identity, bypassing model tool input.
     return await this.#claimService.claimNext(owner);
   }
 
   async waitForPoll(wakeup: AbortSignal): Promise<void> {
-    // 轮询等待由 sleeper 抽象，测试可用确定性实现而无需真实等待。
+    // A sleeper abstracts polling wait. Tests can use a deterministic implementation without real waiting.
     await this.#sleeper.sleep(this.#pollIntervalSeconds, wakeup);
   }
 
   renderClaimPrompt(claim: TaskClaim): string {
-    // 用确定性 JSON 把 token、lease 和任务状态一起交给模型，模型必须显式调用 complete_task。
+    // Pass token, lease, and task state to the model in deterministic JSON; the model must call complete_task explicitly.
     const payload = {
       claim_token: claim.claimToken,
       lease_expires_at_utc: claim.leaseExpiresAtUtc.toISOString(),
@@ -238,7 +238,7 @@ export function leasedTaskToolDefinitions(
   if (!isTaskClaimService(claimService) || claimService.store !== store) {
     throw new Error("claimService must use the leased Task store");
   }
-  // 数组顺序即 Lead/Teammate 的工具分界：Teammate 注册时跳过 create_task。
+  // Array order defines the Lead/Teammate tool boundary: Teammates skip create_task during registration.
   const create: ToolDefinition<z.infer<typeof createTaskSchema>> = {
     name: "create_task",
     description: "Create a persistent SQLite project task with explicit dependencies.",
@@ -296,7 +296,7 @@ export function leasedTaskToolDefinitions(
     effect: "write",
     handler: async (input, context) => {
       try {
-        // claimService 从 ToolContext.identity 推导 owner，工具参数没有 owner 字段。
+        // claimService derives owner from ToolContext.identity; tool arguments have no owner field.
         return toolSuccess(
           JSON.stringify(claimPayload(await claimService.claimTask(input.task_id, context))),
         );
@@ -312,7 +312,7 @@ export function leasedTaskToolDefinitions(
     effect: "write",
     handler: async (input, context) => {
       try {
-        // owner 仍由 context.identity 注入，claim_token 是模型唯一需要回传的权限证明。
+        // context.identity still injects owner; claim_token is the only permission proof the model must return.
         const result = await claimService.completeTask(input.task_id, input.claim_token, context);
         return toolSuccess(
           JSON.stringify({
@@ -333,7 +333,7 @@ export function registerLeasedTaskTools(
   store: LeasedTaskStore,
   claimService?: TaskClaimService,
 ): void {
-  // Lead 和一次性子代理可创建任务、查询、认领并完成整个 DAG。
+  // Lead and one-shot subagents can create, query, claim, and complete tasks across the entire DAG.
   const [create, get, list, claim, complete] = leasedTaskToolDefinitions(store, claimService);
   registry.register(create);
   registry.register(get);
@@ -347,7 +347,7 @@ export function registerTeammateLeasedTaskTools(
   store: LeasedTaskStore,
   claimService?: TaskClaimService,
 ): void {
-  // 持续队友只处理已有任务，不暴露 create_task，避免空闲循环无界扩张任务图。
+  // Persistent teammates only process existing tasks and do not expose create_task, preventing idle loops from expanding the task graph without bound.
   const [, get, list, claim, complete] = leasedTaskToolDefinitions(store, claimService);
   registry.register(get);
   registry.register(list);
@@ -356,7 +356,7 @@ export function registerTeammateLeasedTaskTools(
 }
 
 export function canonicalClaimToken(value: string): string {
-  // token 使用 canonical UUID，拒绝大小写或格式变体形成多个文本身份。
+  // token uses canonical UUIDs, rejecting case or format variations that create multiple textual identities.
   try {
     return canonicalTaskId(value);
   } catch {
@@ -365,7 +365,7 @@ export function canonicalClaimToken(value: string): string {
 }
 
 function isLeasedTaskStore(value: unknown): value is LeasedTaskStore {
-  // 组合根只依赖最小结构契约，避免把具体 SQLite 类泄漏到领域层。
+  // The composition root only depends on a minimal structural contract, avoiding leaking concrete SQLite classes to the domain layer.
   return (
     typeof value === "object" &&
     value !== null &&
@@ -379,7 +379,7 @@ function isLeasedTaskStore(value: unknown): value is LeasedTaskStore {
 }
 
 function isTaskClaimService(value: unknown): value is TaskClaimService {
-  // 除方法形状外还校验 store，随后构造器继续要求实例引用完全相同。
+  // Validates store in addition to method shapes; subsequent constructor continues to require completely identical instance references.
   return (
     typeof value === "object" &&
     value !== null &&
@@ -391,7 +391,7 @@ function isTaskClaimService(value: unknown): value is TaskClaimService {
 }
 
 function taskPayload(task: Task): Readonly<Record<string, unknown>> {
-  // 内存 Task 使用 blockedBy，工具结果统一映射为 wire format 的 blocked_by。
+  // In-memory Task uses blockedBy; tool results map uniformly to wire format blocked_by.
   return {
     blocked_by: [...task.blockedBy],
     description: task.description,
@@ -403,7 +403,7 @@ function taskPayload(task: Task): Readonly<Record<string, unknown>> {
 }
 
 function claimPayload(claim: TaskClaim): Readonly<Record<string, unknown>> {
-  // TaskClaim 内部字段是 camelCase，序列化给模型时统一换成 claim_token 与 lease_expires_at_utc。
+  // TaskClaim internal fields are camelCase; serialization for the model uniformly uses claim_token and lease_expires_at_utc.
   return {
     claim_token: claim.claimToken,
     lease_expires_at_utc: claim.leaseExpiresAtUtc.toISOString(),

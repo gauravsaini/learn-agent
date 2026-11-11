@@ -1,4 +1,4 @@
-// 章节能力清单：每个 profile 都是冻结单例，组合根据此决定启用的运行时边界。
+// Chapter capability list: each profile is a frozen singleton; the composition root determines enabled runtime boundaries from it.
 export type Capability =
   | "loop"
   | "powershell"
@@ -19,52 +19,52 @@ export type Capability =
   | "cron"
   | "teammate"
   | "mailbox"
-  // protocol 与 plan_gate 共同表示结构化审批消息和副作用执行门控。
+  // protocol and plan_gate together represent structured approval messages and side-effect execution gating.
   | "protocol"
   | "plan_gate"
-  // task_dag_sqlite 与 work_stealing 表示带租约的 SQLite 任务图与去中心化认领。
+  // task_dag_sqlite and work_stealing indicate leased SQLite task graphs and decentralized claims.
   | "task_dag_sqlite"
   | "work_stealing"
-  // worktree 启用受管 Git 工作树与动态 ToolContextProvider。
+  // worktree enables Managed Git Worktrees and dynamic ToolContextProvider.
   | "worktree";
 
 export interface ChapterProfile {
-  // chapter 与能力集共同构成 profileForChapter 返回的固定单例。
+  // chapter and capability sets together form the fixed singleton returned by profileForChapter.
   readonly chapter: number;
   readonly capabilities: ReadonlySet<Capability>;
 }
 
 class CapabilitySet implements ReadonlySet<Capability> {
-  // 包装原生 Set，只暴露 ReadonlySet 契约。
+  // Wrap native Set and expose only the ReadonlySet contract.
   readonly #values: Set<Capability>;
 
   constructor(values: readonly Capability[]) {
-    // 复制输入，外部修改不会改变已构建 profile。
+    // Copy input; external modifications do not change constructed profiles.
     this.#values = new Set(values);
   }
 
   get size(): number {
-    // 返回去重后的能力数量。
+    // Returns the deduplicated number of capabilities.
     return this.#values.size;
   }
 
   has(value: Capability): boolean {
-    // 组合根通过能力位选择依赖，不散落章节号判断。
+    // The composition root selects dependencies via capability bits instead of scattering chapter number checks.
     return this.#values.has(value);
   }
 
   entries(): SetIterator<[Capability, Capability]> {
-    // 迭代行为与原生 Set 一致。
+    // Iteration behavior matches native Set.
     return this.#values.entries();
   }
 
   keys(): SetIterator<Capability> {
-    // 不暴露内部可变 Set。
+    // Do not expose internal mutable Set.
     return this.#values.keys();
   }
 
   values(): SetIterator<Capability> {
-    // 保留能力构建顺序，便于下一章累计展开。
+    // Preserves capability construction order for cumulative expansion in subsequent chapters.
     return this.#values.values();
   }
 
@@ -72,14 +72,14 @@ class CapabilitySet implements ReadonlySet<Capability> {
     callbackfn: (value: Capability, value2: Capability, set: ReadonlySet<Capability>) => void,
     thisArg?: unknown,
   ): void {
-    // 第三个参数传只读包装本身。
+    // Pass the read-only wrapper itself as the third argument.
     this.#values.forEach((value) => {
       callbackfn.call(thisArg, value, value, this);
     });
   }
 
   [Symbol.iterator](): SetIterator<Capability> {
-    // 支持扩展运算符构建累计能力集。
+    // Support spread operators to construct cumulative capability sets.
     return this.values();
   }
 }
@@ -252,13 +252,13 @@ export const P16: ChapterProfile = Object.freeze({
   capabilities: new CapabilitySet([...P15.capabilities, "protocol", "plan_gate"]),
 });
 
-// P17 在 P16 基础上追加 SQLite 任务图与 work stealing，让 Lead、子代理和队友共享同一认领路径。
+// P17 appends SQLite task graph and work stealing to P16, letting Lead, subagents, and teammates share the same claim path.
 export const P17: ChapterProfile = Object.freeze({
   chapter: 17,
   capabilities: new CapabilitySet([...P16.capabilities, "task_dag_sqlite", "work_stealing"]),
 });
 
-// P18 在 SQLite 工作窃取之上加入受控 Git worktree 隔离。
+// P18 adds controlled Git worktree isolation on top of SQLite work stealing.
 export const P18: ChapterProfile = Object.freeze({
   chapter: 18,
   capabilities: new CapabilitySet([...P17.capabilities, "worktree"]),

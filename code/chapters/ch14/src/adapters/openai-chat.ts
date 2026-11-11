@@ -1,4 +1,4 @@
-// OpenAI SDK 仅存在于此 adapter，core 不依赖供应商类型。
+// OpenAI SDK exists only in this adapter; core does not depend on vendor types.
 import OpenAI, { APIError } from "openai";
 import type {
   ChatCompletionAssistantMessageParam,
@@ -23,12 +23,12 @@ import type {
 } from "../core/model.js";
 import type { OpenAISettings } from "../config.js";
 
-// 成功响应未通过结构校验时抛出此错误，绝不猜测字段类型。
+// Throw this error when successful responses fail structural validation; never guess field types.
 export class OpenAIResponseError extends Error {
   override readonly name = "OpenAIResponseError";
 }
 
-// 最小客户端边界只暴露 create，便于测试注入 fake OpenAI 状态对象。
+// A minimal client boundary exposes only create, allowing tests to inject fake OpenAI state objects.
 export interface OpenAIClientBoundary {
   readonly chat: {
     readonly completions: {
@@ -50,19 +50,19 @@ export class OpenAIChatModel implements ModelClient {
         ? new OpenAI({
             apiKey: settings.apiKey,
             baseURL: settings.baseUrl,
-            // 重试由第 11 章的供应商无关恢复层统一控制，SDK 不得隐藏额外请求。
+            // Retries are controlled uniformly by the provider-agnostic recovery layer from Chapter 11; the SDK must not hide additional requests.
             maxRetries: 0,
           })
         : client;
     this.#model = settings.model;
   }
 
-  // 当前 SDK 没有需要主动释放的连接；保留统一资源边界供 Runner 关闭。
+  // The current SDK has no connections requiring active release; retain uniform resource boundaries for Runner close.
   async close(): Promise<void> {
     return;
   }
 
-  // 先校验请求，再调用供应商；signal 直接透传给网络层。
+  // Validates request before calling vendor; signal passes through directly to network layer.
   async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelReply> {
     validateToolPairing(request.messages);
     if (
@@ -99,7 +99,7 @@ export class OpenAIChatModel implements ModelClient {
   }
 }
 
-// 输入过长只接受稳定的 code/type 标识，不匹配 message 文本。
+// When the input is too long, accept only stable code/type identifiers; do not match message text.
 const PROMPT_TOO_LONG_CODES = new Set([
   "context_length_exceeded",
   "max_context_window",
@@ -107,7 +107,7 @@ const PROMPT_TOO_LONG_CODES = new Set([
   "prompt_too_long",
 ]);
 
-// 只识别 APIError 的结构化字段；未知错误原样抛回。
+// Recognize only structured fields in APIError; rethrow unknown errors as-is.
 function mapApiStatusError(error: unknown): Error | undefined {
   if (!(error instanceof APIError)) {
     return undefined;
@@ -148,7 +148,7 @@ function mapApiStatusError(error: unknown): Error | undefined {
   return undefined;
 }
 
-// error code 只取平铺对象或一层 error 对象中的 code/type，避免递归搜索不可信 JSON。
+// error code only extracts code/type from flat objects or one-level error objects, avoiding recursive searches of untrusted JSON.
 function structuredErrorIdentifier(body: unknown): string | undefined {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return undefined;
@@ -169,7 +169,7 @@ function structuredErrorIdentifier(body: unknown): string | undefined {
   return undefined;
 }
 
-// 只从标准 Headers 读取 Retry-After，其他响应类型不猜测。
+// Read Retry-After only from standard Headers; do not guess for other response types.
 function retryAfterValue(headers: unknown): string | undefined {
   if (headers instanceof Headers) {
     return nonEmptyText(headers.get("retry-after"));
@@ -192,7 +192,7 @@ interface NormalizedResponse {
   readonly usage?: TokenUsage;
 }
 
-// 成功响应属于不可信边界，逐字段校验 OpenAI Chat Completion 结构。
+// Successful responses belong to untrusted boundaries; validate OpenAI Chat Completion structures field by field.
 function normalizeResponse(response: unknown): NormalizedResponse {
   if (typeof response !== "object" || response === null) {
     throw new OpenAIResponseError("Chat completion response must be an object");
@@ -246,7 +246,7 @@ function normalizeResponse(response: unknown): NormalizedResponse {
   });
 }
 
-// tool_calls 必须带完整 id/name/arguments，任何缺失都让本轮失败。
+// tool_calls must carry complete id/name/arguments; any missing item causes this turn to fail.
 function normalizeToolCall(call: unknown): ReturnType<typeof toolCall> {
   if (typeof call !== "object" || call === null) {
     throw new OpenAIResponseError("Tool call must be an object");
@@ -278,7 +278,7 @@ function isFinishReason(value: unknown): value is FinishReason {
   );
 }
 
-// ChatMessage 到 OpenAI wire format 的映射，assistant tool_calls 原样保留。
+// Mapping from ChatMessage to OpenAI wire format; assistant tool_calls are preserved as is.
 function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
   switch (message.role) {
     case "system":
@@ -303,7 +303,7 @@ function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
   }
 }
 
-// 工具 schema 直接映射，OpenAI 只接受 function 类型。
+// Tool schemas map directly; OpenAI accepts only function types.
 function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
   return {
     type: "function",
@@ -315,7 +315,7 @@ function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
   };
 }
 
-// usage 字段为不可信输入，缺少或非负整数失败。
+// usage is untrusted input; missing fields or non-integer values fail.
 function normalizeUsage(usage: unknown): TokenUsage {
   if (typeof usage !== "object" || usage === null) {
     throw new OpenAIResponseError("Chat completion usage must be an object");

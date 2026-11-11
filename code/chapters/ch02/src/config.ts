@@ -1,24 +1,24 @@
 /**
- * 配置模块：从 .env 文件或进程环境变量读取 OpenAI 连接参数。
- * settingsFromMapping 是纯函数，校验并归一化配置后可被测试直接调用；
- * settingsFromEnvFile 在进程边界读取本地 .env 后再复用同一套校验。
- * baseUrl 不允许以 /chat/completions 结尾，否则 SDK 会构造错误路径。
+ * Configuration module: reads OpenAI connection parameters from .env file or process environment variables.
+ * settingsFromMapping is a pure function. Tests can call it directly after validating and normalizing configuration;
+ * settingsFromEnvFile reads local .env at the process boundary and reuses the same validation.
+ * baseUrl must not end with /chat/completions. Otherwise the SDK constructs an invalid path.
  */
 import { readFileSync } from "node:fs";
 
 import { parse } from "dotenv";
 
-// 模型连接的最小环境变量集合；fallback 由后续章节按需提升为必填项。
+// Minimal environment variable set for model connection; later chapters promote fallback to required as needed.
 const requiredFields = ["OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"] as const;
 
-// 保留缺失字段，CLI 可据此区分配置问题与运行期失败。
+// Retains missing fields so CLI can distinguish configuration issues from runtime failures.
 export class ConfigurationError extends Error {
-  // 稳定错误名，CLI 通过它选择配置错误退出码。
+  // Stable error name; the CLI uses it to select the configuration error exit code.
   override readonly name = "ConfigurationError";
-  // 缺失或不合法的环境变量名称，冻结副本防止错误对象被篡改。
+  // Missing or invalid environment variable name; freeze the copy to prevent tampering with the error object.
   readonly missingFields: readonly string[];
 
-  // 用所有失效字段创建可操作错误，可选 cause 保留 URL 解析失败原因。
+  // Create an actionable error from all invalid fields, with an optional cause preserving the URL parsing failure reason.
   constructor(missingFields: readonly string[], options?: ErrorOptions) {
     super(`Missing required settings: ${missingFields.join(", ")}`, options);
     this.missingFields = Object.freeze([...missingFields]);
@@ -26,17 +26,17 @@ export class ConfigurationError extends Error {
 }
 
 export interface OpenAISettings {
-  // 已验证的 SDK 基础地址，不能是完整 Chat Completions endpoint。
+  // Validated SDK base address; cannot be a full Chat Completions endpoint.
   readonly baseUrl: string;
-  // 已去除首尾空白的访问密钥。
+  // Access key with leading and trailing whitespace trimmed.
   readonly apiKey: string;
-  // 默认模型标识。
+  // Default model identifier.
   readonly model: string;
-  // 后续恢复能力使用的备用模型；P02 不强制要求。
+  // Fallback model used by subsequent recovery capabilities; P02 does not mandate it.
   readonly fallbackModel?: string;
 }
 
-// 先完整校验再读取字段，避免用默认值掩盖缺失的连接配置。
+// Validates completely before reading fields, avoiding masking missing connection configuration with default values.
 export function settingsFromMapping(
   mapping: Readonly<Record<string, string | undefined>>,
   requireFallback = false,
@@ -65,7 +65,7 @@ export function settingsFromMapping(
   if (parsedBaseUrl.protocol !== "http:" && parsedBaseUrl.protocol !== "https:") {
     throw new ConfigurationError(["OPENAI_BASE_URL"]);
   }
-  // SDK 会附加 Chat Completions 路径；完整 endpoint 会导致请求路径重复。
+  // SDK appends Chat Completions path; a full endpoint leads to duplicate request paths.
   const normalizedPath = parsedBaseUrl.pathname.replace(/\/+$/, "");
   if (normalizedPath.endsWith("/chat/completions")) {
     throw new ConfigurationError(["OPENAI_BASE_URL"]);
@@ -81,7 +81,7 @@ export function settingsFromMapping(
   });
 }
 
-// .env 解析属于进程边界；其余校验复用纯映射函数以便测试。
+// .env parsing belongs to the process boundary; other validations reuse pure mapping functions for testing.
 export function settingsFromEnvFile(path: string, requireFallback = false): OpenAISettings {
   return settingsFromMapping(parse(readFileSync(path)), requireFallback);
 }

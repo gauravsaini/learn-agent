@@ -23,21 +23,21 @@ import { isWindowsReservedComponent } from "../core/filesystem.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../core/tools.js";
 import { toolError, toolSuccess } from "../core/tools.js";
 
-// 技能目录、工具名与 catalog 上限是 Skill 功能的公共边界。
+// Skill directories, tool names, and catalog limits are public boundaries of Skill features.
 export const LOAD_SKILL_TOOL_NAME = "load_skill";
 export const DEFAULT_SKILLS_DIRECTORY = "skills";
-// 目录摘要的条目数上限，防止大量 Skill 占用初始系统提示。
+// Upper limit on catalog summary item count to prevent many Skills from consuming the initial system prompt.
 export const DEFAULT_MAX_CATALOG_ENTRIES = 100;
-// 目录摘要按 UTF-8 字节计量的上限，和条目数共同约束提示词预算。
+// The upper limit for catalog summary in UTF-8 bytes, constraining prompt budget together with item count.
 export const DEFAULT_MAX_CATALOG_BYTES = 8_000;
-// 工具参数和目录名允许的最大长度，过长名称不会进入路径解析。
+// Maximum allowed length for tool parameters and directory names; overly long names do not enter path resolution.
 export const MAX_SKILL_NAME_LENGTH = 64;
 
-// Skill 注册表只公开受限目录中的清单摘要，正文必须通过 load_skill 按需读取。
+// Skill registry exposes only catalog summaries in restricted directories; load_skill must read full content on demand.
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const SKILL_NAME_REGEXP = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
-// 校验名称为字母数字带连字符的合法标识，并拒绝 Windows 设备名。
+// Validate that name is a legal alphanumeric identifier with hyphens and reject Windows device names.
 const loadSkillInputSchema = z
   .object({
     name: z
@@ -50,72 +50,72 @@ const loadSkillInputSchema = z
   })
   .strict();
 
-// 通过严格 schema 的加载请求，仅携带目录快照中出现的候选名称。
+// Loading request that passed strict schema, carrying only candidate names appearing in the catalog snapshot.
 export type LoadSkillInput = Readonly<z.output<typeof loadSkillInputSchema>>;
 
-// Skill 领域错误的公共基类，load_skill handler 据此映射为稳定工具错误码。
+// Common base class for Skill domain errors; load_skill handler maps it to stable tool error codes.
 export class SkillError extends Error {}
 
-// 路径解析失败或越界，例如 workspace 不存在、目录被符号链接逃逸。
+// Path resolution failed or out of bounds. For example, the workspace does not exist, or a symlink escapes the directory.
 export class SkillPathError extends SkillError {}
 
-// frontmatter 缺失、YAML 格式错误或 name/description 不合规。
+// Missing frontmatter, invalid YAML format, or non-compliant name/description.
 export class SkillManifestError extends SkillError {}
 
-// 扫描到多个 Skill 使用同一名称时直接失败，不允许静默覆盖。
+// Fail directly when scanning finds multiple Skills using the same name; do not allow silent overwriting.
 export class DuplicateSkillError extends SkillError {}
 
-// 请求名称本身不合法，例如长度超限或包含 Windows 保留组件。
+// Request name is invalid, such as exceeding length limits or containing Windows reserved names.
 export class SkillNameError extends SkillError {}
 
-// 请求名称格式合法，但当前注册表中不存在。
+// Request name format is valid, but does not exist in the current registry.
 export class SkillNotFoundError extends SkillError {}
 
-// 目录中唯一向模型公开的元数据：名称和单行路由描述。
+// The only metadata exposed to the model in the catalog: name and single-line routing description.
 export interface SkillSummary {
-  // 用于工具路由且必须与 Skill 目录名一致的稳定标识。
+  // A stable identifier used for tool routing that must match the Skill directory name.
   readonly name: string;
-  // 供模型选择是否加载正文的单行摘要，不包含私有指令内容。
+  // Single-line summary used by the model to decide whether to load full text, containing no private instruction content.
   readonly description: string;
 }
 
-// 内部记录同时保存目录名、词法路径与 manifest 路径，供扫描后加载时逐层复查真实位置。
-// 内部记录保留逻辑路径，显式加载时再重新解析物理路径。
+// Internal records store directory name, lexical path, and manifest path simultaneously for layered re-verification of real locations on load after scans.
+// Internal records retain logical paths and re-resolve physical paths on explicit loading.
 interface SkillRecord extends SkillSummary {
   readonly directoryName: string;
   readonly directoryPath: string;
   readonly manifestPath: string;
 }
 
-// 扫描选项只控制目录摘要的边界，不控制正文内容或文件数量。
+// Scan options control catalog summary boundaries only, not body content or file counts.
 export interface SkillScanOptions {
-  // workspace 内的相对根目录；绝对路径和父级段会在扫描前拒绝。
+  // Relative root directory within workspace; reject absolute paths and parent segments before scanning.
   readonly skillsDirectory?: string;
-  // 初始 catalog 最多公开的 Skill 数量。
+  // Maximum number of Skills exposed in the initial catalog.
   readonly maxCatalogEntries?: number;
-  // 初始 catalog 渲染文本的 UTF-8 字节预算。
+  // UTF-8 byte budget for the rendered text of the initial catalog.
   readonly maxCatalogBytes?: number;
 }
 
-// 解析后的 Skill 文档：frontmatter 元数据加 SKILL.md 正文。
+// Parsed Skill document: frontmatter metadata plus SKILL.md body.
 interface ParsedSkillDocument extends SkillSummary {
   readonly body: string;
 }
 
-// 扫描生成不可变元数据快照；加载时重新校验每一层真实路径。
+// Scanning generates immutable metadata snapshots; revalidate real paths at each layer during loading.
 export class SkillRegistry {
-  // 扫描时记录入口，加载时再次校验真实路径，以防扫描后链接被替换。
-  // 规范化的工作区根，作为所有目录与请求上下文的共同信任边界。
+  // Record entry points during scanning and validate real paths again on load, preventing links from being replaced after scanning.
+  // Normalized workspace root, serving as the common trust boundary for all directories and request contexts.
   readonly #workspaceRoot: string;
-  // 已校验的 skills 根；loadSkill 每次使用前仍会重新解析其真实路径。
+  // Validated skills root; loadSkill re-resolves its real path before each use.
   readonly #skillsRoot: string;
-  // 完整注册记录只保留在内部，模型只能通过 names/catalogEntries 发现可用 Skill。
+  // Full registration records are kept internally only; models can discover available Skills only through names/catalogEntries.
   readonly #records: ReadonlyMap<string, SkillRecord>;
-  // 已注册名称的稳定排序快照，供组合根和测试枚举能力。
+  // Stably sorted snapshot of registered names, for composition roots and tests to enumerate capabilities.
   readonly names: readonly string[];
-  // 已受条目和字节预算限制的公开摘要快照。
+  // Public summary snapshot restricted by entry and byte budgets.
   readonly catalogEntries: readonly SkillSummary[];
-  // 绑定此注册表工作区的只读工具，handler 会核验 ToolContext 归属。
+  // Bind read-only tools of this registry workspace; the handler verifies ToolContext ownership.
   readonly toolDefinition: ToolDefinition<LoadSkillInput>;
 
   private constructor(
@@ -138,11 +138,11 @@ export class SkillRegistry {
     });
   }
 
-  // 扫描是构建期快照：按名称排序读取目录与 frontmatter，生成不可变的注册表和目录。
-  // 扫描阶段只建立不可变快照：先固定 workspace 与 skills 根的真实路径，
-  // 再逐项读取 frontmatter；正文和动态重查都留给 loadSkill。
+  // Scanning is a build-time snapshot: read directories and frontmatters sorted by name, generating immutable registries and catalogs.
+  // The scan phase builds immutable snapshots only: fix real paths of workspace and skills roots first,
+  // Reads frontmatter item by item next; body and dynamic re-checks are left to loadSkill.
   static scan(workspace: string, options: SkillScanOptions = {}): SkillRegistry {
-    // Catalog 有条目和字节上限，避免 workspace 文件把系统提示词无限扩张。
+    // Catalog has item and byte caps to prevent workspace files from expanding the system prompt indefinitely.
     const workspaceRoot = resolveWorkspace(workspace);
     const skillsDirectory =
       options.skillsDirectory === undefined ? DEFAULT_SKILLS_DIRECTORY : options.skillsDirectory;
@@ -192,7 +192,7 @@ export class SkillRegistry {
         `Skill manifest escapes its directory: ${entry.name}`,
       );
       const parsed = parseSkillDocument(readFrontmatter(manifestPath), manifestPath);
-      // 保存逻辑入口；显式加载时重新解析，才能发现扫描后的链接替换。
+      // Save logic entry point; re-parses during explicit loads to discover link replacements after scans.
       const record: SkillRecord = Object.freeze({
         name: parsed.name,
         description: parsed.description,
@@ -227,28 +227,28 @@ export class SkillRegistry {
     );
   }
 
-  // 目录渲染保持唯一格式，作为 system prompt 中 skills section 的直接数据源。
-  // 目录是给模型的纯文本摘要；只包含名称和描述，正文绝不进入该结果。
-  // 将已截断快照渲染为系统提示片段；不触发额外文件读取。
+  // Directory rendering preserves a unique format, serving as the direct data source for the skills section in system prompt.
+  // The catalog is a plain text summary for the model; it contains only names and descriptions, and bodies never enter this result.
+  // Render truncated snapshots as system prompt fragments; trigger no extra file reads.
   renderCatalog(): string {
     return this.catalogEntries
       .map((entry) => `- **${entry.name}**: ${entry.description}`)
       .join("\n");
   }
 
-  // 显式加载时才读取完整正文；目录阶段只保留名称和描述，避免启动时解码所有 Skill 文件。
-  // 显式加载：重新解析 workspace、Skill 目录和 manifest 的真实路径，
-  // 防止扫描之后发生链接替换或文件内容变化。
-  // 按名称取回正文；成功前必须再次确认记录仍在原受信任路径下。
+  // Read the full body only on explicit load; cataloging retains only name and description to avoid decoding all Skill files at startup.
+  // Explicit load: re-resolve real paths of workspace, Skill directory, and manifest.
+  // Prevents link replacement or file content changes after scanning.
+  // Retrieve the body by name. Confirm the record remains under the original trusted path before success.
   async loadSkill(name: string): Promise<string> {
-    // 读取请求边界重新解析 workspace、Skill 目录和 manifest 的物理位置。
+    // Read request boundary re-resolves physical locations of workspace, Skill directory, and manifest.
     validateSkillName(name);
     const record = this.#records.get(name);
     if (record === undefined) {
       throw new SkillNotFoundError(`Skill not found: ${name}`);
     }
 
-    // load_skill 位于请求路径，使用异步 I/O，并重新检查每一层真实路径。
+    // load_skill is on the request path, uses async I/O, and re-checks real paths at every level.
     const currentSkillsRoot = await checkedRealDirectoryAsync(
       this.#skillsRoot,
       this.#workspaceRoot,
@@ -274,9 +274,9 @@ export class SkillRegistry {
     return document.body;
   }
 
-  // handler 先验证 workspace 一致性，再通过 loadSkill 读取并返回正文。
-  // handler 先验证工具上下文与注册表属于同一个 workspace，再通过 loadSkill
-  // 读取正文；错误码按领域错误分类，避免向模型泄漏内部文件路径。
+  // handler validates workspace consistency first, then reads and returns body text via loadSkill.
+  // handler validates that tool context and registry belong to the same workspace first, then via loadSkill
+  // Read body; classify error codes as domain errors to prevent leaking internal file paths to the model.
   async #handleLoad(input: LoadSkillInput, context: ToolContext): Promise<ToolResult> {
     let contextWorkspace: string;
     try {
@@ -296,7 +296,7 @@ export class SkillRegistry {
     try {
       return toolSuccess(await this.loadSkill(input.name));
     } catch (error) {
-      // 将领域异常映射为稳定 errorCode；模型不需要也不应看到内部路径细节。
+      // Map domain exceptions to stable errorCodes; models do not need and should not see internal path details.
       if (error instanceof SkillNotFoundError) {
         return toolError("skill_not_found", "Requested Skill is not registered");
       }
@@ -311,7 +311,7 @@ export class SkillRegistry {
   }
 }
 
-// 扫描选项的预算必须是正整数；undefined 时使用章节默认值。
+// Scan option budgets must be positive integers; use chapter defaults when undefined.
 function positiveInteger(value: number | undefined, fallback: number, label: string): number {
   const selected = value === undefined ? fallback : value;
   if (!Number.isInteger(selected) || selected <= 0) {
@@ -320,8 +320,8 @@ function positiveInteger(value: number | undefined, fallback: number, label: str
   return selected;
 }
 
-// workspace 必须存在且是真实目录；realpath 后的绝对路径是后续所有边界判断的基准。
-// 同步阶段用 realpath 得到规范绝对路径，避免相对路径和链接造成歧义。
+// workspace must exist and be a real directory; absolute paths after realpath serve as baseline for all subsequent boundary checks.
+// Use realpath in the synchronization phase to get canonical absolute paths, avoiding ambiguity from relative paths and links.
 function resolveWorkspace(workspace: string): string {
   let root: string;
   try {
@@ -335,8 +335,8 @@ function resolveWorkspace(workspace: string): string {
   return root;
 }
 
-// 工具请求路径使用异步 realpath，避免把同步文件系统调用放在 Agent 执行链路中。
-// 异步阶段复用同一套 workspace 校验，供工具请求路径重新解析。
+// Tool request paths use asynchronous realpath, avoiding synchronous filesystem calls in the Agent execution path.
+// Asynchronous phases reuse the same workspace validation to re-resolve tool request paths.
 async function resolveWorkspaceAsync(workspace: string): Promise<string> {
   let root: string;
   try {
@@ -350,8 +350,8 @@ async function resolveWorkspaceAsync(workspace: string): Promise<string> {
   return root;
 }
 
-// Skills 目录必须是非空相对路径，且不能包含上级目录、绝对路径或 Windows 保留组件。
-// Skill 根必须是 workspace 内的相对目录；拒绝绝对路径、父级、NUL 和保留组件。
+// Skills directory must be a non-empty relative path and cannot contain parent directories, absolute paths, or Windows reserved components.
+// Skill root must be a relative directory inside workspace; rejects absolute paths, parent traversal, NUL, and reserved components.
 function resolveSkillRoot(workspaceRoot: string, skillsDirectory: string): string {
   if (skillsDirectory.length === 0 || skillsDirectory.includes("\0")) {
     throw new SkillPathError("Skills directory must be a non-empty relative path");
@@ -381,8 +381,8 @@ function resolveSkillRoot(workspaceRoot: string, skillsDirectory: string): strin
   return target;
 }
 
-// 目录路径必须在扫描或加载时解析为真实位置，防止符号链接把入口带出允许范围。
-// 同步路径复查：realpath 后必须仍位于 root 内，且目标确实是目录。
+// Directory paths must resolve to real locations during scanning or loading, preventing symlinks from escaping the allowed scope.
+// Synchronous path recheck: realpath must remain inside root, and the target must be a directory.
 function checkedRealDirectory(path: string, root: string, message: string): string {
   let physical: string;
   try {
@@ -396,8 +396,8 @@ function checkedRealDirectory(path: string, root: string, message: string): stri
   return physical;
 }
 
-// 文件路径与目录一样做 realpath 边界校验，SKILL.md 不能通过链接指向其他目录。
-// 同步路径复查：manifest 必须是 root 内真实存在的文件。
+// File paths perform realpath boundary validation like directories. SKILL.md cannot link to other directories.
+// Synchronous path recheck: manifest must be a real existing file inside root.
 function checkedRealFile(path: string, root: string, message: string): string {
   let physical: string;
   try {
@@ -411,8 +411,8 @@ function checkedRealFile(path: string, root: string, message: string): string {
   return physical;
 }
 
-// 异步加载时逐层重新检查 Skills 根目录、Skill 目录和 manifest 的真实路径。
-// 异步路径复查：加载时重查目录，阻止扫描后的链接被替换成逃逸目标。
+// Recheck real paths of Skills root, Skill directories, and manifests layer by layer during asynchronous loading.
+// Asynchronous path recheck: recheck directories on load to prevent scanned links from being replaced with escape targets.
 async function checkedRealDirectoryAsync(
   path: string,
   root: string,
@@ -430,8 +430,8 @@ async function checkedRealDirectoryAsync(
   return physical;
 }
 
-// 异步读取文件也重新 realpath，扫描后替换链接不会绕过边界检查。
-// 异步路径复查：加载时重查 manifest，阻止扫描后的文件被链接替换。
+// Asynchronous file reads also re-execute realpath; replacing links after scanning will not bypass boundary checks.
+// Asynchronous path recheck: recheck manifests on load to prevent scanned files from being replaced by links.
 async function checkedRealFileAsync(path: string, root: string, message: string): Promise<string> {
   let physical: string;
   try {
@@ -445,7 +445,7 @@ async function checkedRealFileAsync(path: string, root: string, message: string)
   return physical;
 }
 
-// 用相对路径判断包含关系，避免字符串前缀误判 C:\a 与 C:\ab。
+// Use relative paths to check containment, avoiding false matches from string prefixes between C:\a and C:\ab.
 function isInside(root: string, candidate: string): boolean {
   const child = relative(root, candidate);
   return (
@@ -453,12 +453,12 @@ function isInside(root: string, candidate: string): boolean {
   );
 }
 
-// 只读取 frontmatter 结束分隔符之前的字节，避免扫描时解码全量正文。
+// Read only bytes preceding the frontmatter closing delimiter to avoid decoding full text during scanning.
 function readFrontmatter(path: string): string {
   const descriptor = openSync(path, "r");
   const completeLines: Buffer[] = [];
   let pending = Buffer.alloc(0);
-  // 分块读取按行切分；跨 chunk 的行先留在 pending，遇到结束分隔符即可返回。
+  // Chunked read splits by line; lines spanning chunks stay in pending first and return upon reaching end delimiter.
   const chunk = Buffer.allocUnsafe(4_096);
   try {
     while (true) {
@@ -477,7 +477,7 @@ function readFrontmatter(path: string): string {
         pending = Buffer.alloc(0);
         completeLines.push(line);
         if (completeLines.length > 1 && isFrontmatterSeparator(line)) {
-          // catalog 只解码 frontmatter；正文留到 load_skill 被显式调用之后。
+          // catalog only decodes frontmatter; the body remains until load_skill is explicitly called.
           return decodeUtf8(Buffer.concat(completeLines), path);
         }
         offset = newline + 1;
@@ -486,14 +486,14 @@ function readFrontmatter(path: string): string {
     if (pending.byteLength > 0) {
       completeLines.push(pending);
     }
-    // 没有第二个分隔符时仍返回已读内容，由 parseSkillDocument 报告缺分隔符。
+    // Return read content even when missing the second delimiter; parseSkillDocument reports the missing delimiter.
     return decodeUtf8(Buffer.concat(completeLines), path);
   } finally {
     closeSync(descriptor);
   }
 }
 
-// 只把恰好三个连字符的一行当作分隔符，并兼容 CRLF 行尾。
+// Treat only a line with exactly three hyphens as a delimiter, compatible with CRLF line endings.
 function isFrontmatterSeparator(line: Buffer): boolean {
   let end = line.byteLength;
   if (end > 0 && line[end - 1] === 0x0a) {
@@ -505,7 +505,7 @@ function isFrontmatterSeparator(line: Buffer): boolean {
   return end === 3 && line[0] === 0x2d && line[1] === 0x2d && line[2] === 0x2d;
 }
 
-// 使用 fatal TextDecoder，非 UTF-8 内容直接映射为 SkillManifestError。
+// Uses fatal TextDecoder; non-UTF-8 content maps directly to SkillManifestError.
 function decodeUtf8(bytes: Uint8Array, source: string): string {
   try {
     return UTF8_DECODER.decode(bytes);
@@ -514,8 +514,8 @@ function decodeUtf8(bytes: Uint8Array, source: string): string {
   }
 }
 
-// 保留行尾结束符，便于确定 frontmatter 的闭合位置和正文起始位置。
-// 按 \n 切分并保留行尾，便于后续区分 frontmatter 与正文边界。
+// Retains line endings to determine frontmatter closing position and body starting position easily.
+// Split by \n and preserve line endings to help distinguish the boundary between frontmatter and body.
 function splitLinesKeepEnds(text: string): string[] {
   const lines: string[] = [];
   let start = 0;
@@ -531,7 +531,7 @@ function splitLinesKeepEnds(text: string): string[] {
   return lines;
 }
 
-// 统一剥离 \n 和可选的 \r\n，使分隔符判断不依赖换行风格。
+// Strip \n and optional \r\n uniformly so delimiter detection does not depend on newline style.
 function stripLineEnding(line: string): string {
   if (line.endsWith("\r\n")) {
     return line.slice(0, -2);
@@ -539,7 +539,7 @@ function stripLineEnding(line: string): string {
   return line.endsWith("\n") ? line.slice(0, -1) : line;
 }
 
-// 校验 frontmatter 格式与结构，确保 name、description 合规。
+// Validate frontmatter format and structure to ensure name and description comply.
 function parseSkillDocument(text: string, source: string): ParsedSkillDocument {
   const lines = splitLinesKeepEnds(text);
   if (lines.length === 0 || stripLineEnding(lines[0] as string) !== "---") {
@@ -587,14 +587,14 @@ function parseSkillDocument(text: string, source: string): ParsedSkillDocument {
   return Object.freeze({
     name,
     description: normalizedDescription,
-    // 正文保留原始换行，显式加载后原样进入 tool result。
+    // The body retains original line breaks and enters tool result unchanged after explicit loading.
     body: lines.slice(closingIndex + 1).join(""),
   });
 }
 
-// 名称同时约束 frontmatter、目录名和 load_skill 参数，保证三处使用同一套安全标识规则。
+// Names constrain frontmatter, directory names, and load_skill parameters, ensuring all three use the same safe identifier rules.
 function validateSkillName(name: string): void {
-  // 名称规则同时约束目录名和工具参数，保证请求名到文件的映射稳定。
+  // Naming rules constrain directory names and tool parameters, ensuring stable mapping from requested names to files.
   if (
     name.length > MAX_SKILL_NAME_LENGTH ||
     !SKILL_NAME_REGEXP.test(name) ||
@@ -604,7 +604,7 @@ function validateSkillName(name: string): void {
   }
 }
 
-// 目录排序使用字典序，使系统提示中的目录可稳定复现。
+// Sort directories lexicographically to reproduce the catalog in system prompts stably.
 function compareSkillNames(left: string, right: string): number {
   if (left === right) {
     return 0;
@@ -612,8 +612,8 @@ function compareSkillNames(left: string, right: string): number {
   return left < right ? -1 : 1;
 }
 
-// Catalog 按条目数和 UTF-8 byte 双重上限截断，返回不可变快照。
-// separatorBytes 计算条目之间的换行，保证渲染结果不会超过 maxCatalogBytes。
+// Catalog truncates on both item count and UTF-8 byte caps, returning an immutable snapshot.
+// separatorBytes accounts for newlines between entries to ensure rendered output does not exceed maxCatalogBytes.
 function boundedCatalog(
   records: readonly SkillRecord[],
   maxEntries: number,

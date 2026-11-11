@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// 向后传导注释：把 source 文件里的整行 // 注释按「锚点逻辑行」插入 target。
-// 规则：
-//   1. 只插入整行 // 注释——target 剥掉注释后的逻辑行序列逐字节不变；
-//   2. 注释挂在它后面第一条逻辑行上；锚点在 target 中找不到（源章独有的代码）则跳过并记录；
-//   3. 幂等：注释文本已存在于 target 任意位置则跳过；
-//   4. 输出保持 target 原行尾风格（CRLF/LF）。
+// Forward-propagate comments: insert full-line // comments from the source file into target based on "anchor logical lines".
+// Rules:
+//   1. Insert only full-line // comments—the logical line sequence of target stripped of comments remains byte-identical;
+//   2. Attach comments to the first logical line after it; skip and record if the anchor is not found in target (source-chapter-only code);
+//   3. Idempotent: skip if the comment text already exists anywhere in target;
+//   4. Output preserves the original line ending style of target (CRLF/LF).
 // usage: node propagate-comments.mjs <source.ts> <target.ts> [more targets...]
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -25,7 +25,7 @@ const readLines = (p) => {
 const isComment = (line) => /^\s*\/\//.test(line);
 const isBlank = (line) => line.trim() === "";
 
-// 解析出逻辑行序列与挂在各逻辑行索引上的注释组。
+// Parse sequence of logical lines and comment groups attached to each logical line index.
 function parse(lines) {
   const logical = [];
   const rawIndexOf = [];
@@ -49,8 +49,8 @@ function parse(lines) {
   return { logical, rawIndexOf, commentGroups };
 }
 
-// LCS 对齐：返回 Map<sourceIdx, targetIdx>。
-// 对齐键剥掉行首 export 前缀，使 `function f` 与 `export function f` 视为同一逻辑行。
+// LCS alignment: returns Map<sourceIdx, targetIdx>.
+// Alignment keys strip leading export prefixes, treating `function f` and `export function f` as the same logical line.
 function alignLcs(a, b) {
   const key = (line) => line.replace(/^(\s*)export (?=(function|class|const|interface|type|enum)\s)/, "$1");
   const ka = a.map(key);
@@ -94,7 +94,7 @@ function propagate(sourcePath, targetPath) {
 
   const alignment = alignLcs(s.logical, t.logical);
 
-  // targetIdx -> 待插入注释组（保持源顺序）
+  // targetIdx -> comment groups to insert (preserving source order)
   const insertions = new Map();
   let inserted = 0;
   let skippedDup = 0;
@@ -116,26 +116,26 @@ function propagate(sourcePath, targetPath) {
     inserted += fresh.length;
   }
 
-  // 从后往前插入，避免 raw 索引位移。
+  // Inserts from back to front to avoid raw index displacement.
   let out = [...tgt.lines];
   for (const targetIdx of [...insertions.keys()].sort((x, y) => y - x)) {
     const rawIdx = t.rawIndexOf[targetIdx];
     out.splice(rawIdx, 0, ...insertions.get(targetIdx));
   }
 
-  // 验证：剥注释后逻辑行不变。
+  // Verification: Logical lines remain unchanged after stripping comments.
   const afterLogical = out.filter((line) => !isComment(line) && !isBlank(line));
   if (afterLogical.join("\n") !== before) {
-    console.error(`[${targetPath}] 逻辑行发生变化，拒绝写出`);
+    console.error(`[${targetPath}] Logical lines changed; refused to write out`);
     process.exitCode = 1;
     return;
   }
 
   writeFileSync(targetPath, out.join(tgt.eol) + tgt.eol);
   console.log(
-    `[${targetPath}] 插入 ${inserted} 行注释；跳过已存在 ${skippedDup} 行；无锚点跳过 ${skippedNoAnchor.length} 行` +
+    `[${targetPath}] inserted ${inserted} comment lines; skipped existing ${skippedDup} lines; skipped without anchor ${skippedNoAnchor.length} lines` +
       (skippedNoAnchor.length > 0
-        ? `（如: ${skippedNoAnchor[0].trim().slice(0, 40)}…）`
+        ? ` (e.g.: ${skippedNoAnchor[0].trim().slice(0, 40)}...)`
         : ""),
   );
 }

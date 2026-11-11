@@ -1,47 +1,47 @@
-// P03 在文件工具基础上增加 policy，作为外部副作用的执行前边界。
+// P03 adds policy on top of file tools as a pre-execution boundary for external side effects.
 export type Capability = "loop" | "powershell" | "tool_registry" | "files" | "policy";
 
 export interface ChapterProfile {
-  // 固定章节号，组合根依此拒绝能力越级。
+  // Fixed chapter number; the composition root rejects capability privilege escalations based on this.
   readonly chapter: number;
-  // 不可变能力白名单，决定本章可装配组件。
+  // Immutable profile, determines components that can be assembled in this chapter.
   readonly capabilities: ReadonlySet<Capability>;
 }
 
 class CapabilitySet implements ReadonlySet<Capability> {
-  // 用不可导出底层 Set 的包装实现 ReadonlySet，防止 profile 能力被外部修改。
+  // Implement ReadonlySet using a wrapper that hides the underlying Set to prevent external modification of profile capabilities.
   readonly #values: Set<Capability>;
 
   constructor(values: readonly Capability[]) {
     this.#values = new Set(values);
   }
 
-  // 返回能力数量，不暴露可变 Set。
+  // Returns the number of capabilities without exposing the mutable Set.
   get size(): number {
     return this.#values.size;
   }
 
-  // 判断能力是否属于当前章节白名单。
+  // Determine whether a capability belongs to the current chapter allowlist.
   has(value: Capability): boolean {
     return this.#values.has(value);
   }
 
-  // 返回键值对迭代器以兼容 ReadonlySet。
+  // Returns a key-value pair iterator for compatibility with ReadonlySet.
   entries(): SetIterator<[Capability, Capability]> {
     return this.#values.entries();
   }
 
-  // 返回能力名称迭代器。
+  // Returns an iterator of capability names.
   keys(): SetIterator<Capability> {
     return this.#values.keys();
   }
 
-  // 返回能力值迭代器；Set 的键和值相同。
+  // Returns an iterator of capability values; keys and values of Set are identical.
   values(): SetIterator<Capability> {
     return this.#values.values();
   }
 
-  // 以原生 Set 回调签名遍历能力。
+  // Iterates capabilities with native Set callback signature.
   forEach(
     callbackfn: (value: Capability, value2: Capability, set: ReadonlySet<Capability>) => void,
     thisArg?: unknown,
@@ -51,7 +51,7 @@ class CapabilitySet implements ReadonlySet<Capability> {
     });
   }
 
-  // 支持 for...of 而不暴露写入入口。
+  // Support for...of without exposing a write entry point.
   [Symbol.iterator](): SetIterator<Capability> {
     return this.values();
   }
@@ -59,25 +59,25 @@ class CapabilitySet implements ReadonlySet<Capability> {
 
 export const P01: ChapterProfile = Object.freeze({
   chapter: 1,
-  // P01 只有循环和 PowerShell，没有工具注册表，也没有文件能力。
+  // P01 has only loop and PowerShell, without Tool Registry or file capabilities.
   capabilities: new CapabilitySet(["loop", "powershell"]),
 });
 
 export const P02: ChapterProfile = Object.freeze({
   chapter: 2,
-  // P02 在此增加工具注册表和文件能力，但还没有权限策略。
+  // P02 adds Tool Registry and file capabilities here, but lacks permission policies.
   capabilities: new CapabilitySet(["loop", "powershell", "tool_registry", "files"]),
 });
 
 export const P03: ChapterProfile = Object.freeze({
   chapter: 3,
-  // P03 增加 policy，bootstrap 检测到此能力后强制注入审批和审计。
+  // P03 adds policy; bootstrap forcibly injects approval and audit when detecting this capability.
   capabilities: new CapabilitySet(["loop", "powershell", "tool_registry", "files", "policy"]),
 });
 
-// 返回模块内冻结单例，拒绝无效或尚未迁移的章节号。
+// Returns a frozen module singleton, rejecting invalid or unmigrated chapter numbers.
 export function profileForChapter(chapter: number): ChapterProfile {
-  // 仅返回模块内冻结的单例，供组合根用引用相等性校验 profile 来源。
+  // Returns only the frozen singleton in the module, so the composition root can verify profile origin by reference equality.
   if (chapter === 1) {
     return P01;
   }

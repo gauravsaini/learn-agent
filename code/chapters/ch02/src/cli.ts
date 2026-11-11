@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * CLI 入口模块：负责解析命令行参数、创建模型与授权器、触发 AgentRunner。
- * TerminalAuthorizer 只对 effect === "execute" 的工具要求交互批准；
- * read/write 工具直接放行，stdin 非 TTY 时默认拒绝 execute 调用。
- * 退出码：0 成功，1 运行时错误，2 配置错误。
+ * CLI entry module: parses command-line arguments, creates the model and authorizer, and triggers AgentRunner.
+ * TerminalAuthorizer requires interactive approval only for tools with effect === "execute";
+ * read/write tools pass directly. Non-TTY stdin rejects execute calls by default.
+ * Exit codes: 0 success, 1 runtime error, 2 configuration error.
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -20,9 +20,9 @@ import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 import type { PreparedToolCall, ToolContext } from "./core/tools.js";
 
-// 终端边界只要求用户批准会执行宿主命令的工具；读写工作区文件不阻塞交互流程。
+// The terminal boundary only requires users to approve tools executing host commands; reading or writing workspace files does not block interactive flows.
 class TerminalAuthorizer implements ToolAuthorizer {
-  // 仅对 execute 工具请求终端批准；非交互或异常一律 fail-closed。
+  // Requests terminal approval only for execute tools; non-interactive or exceptional runs always fail-closed.
   async authorize(
     prepared: PreparedToolCall,
     _context: ToolContext,
@@ -34,17 +34,17 @@ class TerminalAuthorizer implements ToolAuthorizer {
     if (definition.effect !== "execute") {
       return { allowed: true, reason: "This tool effect does not require approval" };
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write("原因: PowerShell command execution requires explicit approval.\n");
-    stderr.write(`参数: ${JSON.stringify(prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write("Reason: PowerShell command execution requires explicit approval.\n");
+    stderr.write(`Arguments: ${JSON.stringify(prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return { allowed: false, reason: "No interactive approval input was available" };
     }
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return {
@@ -58,13 +58,13 @@ class TerminalAuthorizer implements ToolAuthorizer {
 }
 
 interface RunArguments {
-  // 解析后映射为冻结 profile 的章节号。
+  // Chapter number mapped to a frozen profile after parsing.
   readonly chapter: number;
-  // 传给 AgentRunner.run 的用户任务。
+  // User task passed to AgentRunner.run.
   readonly prompt: string;
 }
 
-// 固定章节入口通过 fixedChapter 注入章节号，仍复用通用参数校验逻辑。
+// Fixed chapter entrypoints inject the chapter number via fixedChapter, reusing generic argument validation logic.
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
@@ -98,9 +98,9 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
   return { chapter, prompt };
 }
 
-// 真实启动路径：加载配置、创建 SDK 适配器、装配 Agent 并输出最终文本。
+// Real startup path: load configuration, create SDK adapters, assemble the Agent, and output final text.
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 工作区和 .env 始终从启动目录解析，避免受模块文件所在位置影响。
+  // Resolve workspace and .env from the startup directory at all times, avoiding influence from module file locations.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
   const settings = existsSync(envPath) ? settingsFromEnvFile(envPath) : settingsFromMapping({});
@@ -135,12 +135,12 @@ export async function runProfile(
   });
 }
 
-// CLI 进程边界统一转换错误为稳定的中文标签和退出码。
+// CLI process boundary uniformly converts errors into stable labels and exit codes.
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;
@@ -148,7 +148,7 @@ async function runWithErrorHandling(run: () => Promise<number>): Promise<number>
 }
 
 const entryPath = process.argv[1];
-// 被章节入口导入时不重复执行；直接运行本文件时才解析 argv。
+// Does not re-execute when imported by chapter entry points; parses argv only when running this file directly.
 if (entryPath !== undefined && fileURLToPath(import.meta.url) === resolve(entryPath)) {
   process.exitCode = await runCli(process.argv.slice(2));
 }

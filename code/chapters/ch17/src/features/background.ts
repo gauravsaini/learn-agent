@@ -1,4 +1,4 @@
-// 后台任务运行时：以持久化 Job 为状态源，Supervisor 负责容量、取消、超时和事件发布，Dispatcher 只分流显式可后台工具。
+// Background task runtime: persistent Jobs serve as the state source; Supervisor manages capacity, cancellation, timeouts, and event publishing; Dispatcher only routes explicitly background-eligible tools.
 import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
@@ -15,7 +15,7 @@ import type {
 import { isToolResult, toolError, toolSuccess } from "../core/tools.js";
 import type { BackgroundShellInput } from "./builtin-tools.js";
 
-// 长耗时命令关键词白名单；未显式指定 run_in_background 时，Dispatcher 据此决定是否进入后台。
+// Allowlist of keywords for long-running commands; when run_in_background is not explicitly specified, Dispatcher uses this to decide whether to run in background.
 const BACKGROUND_MARKERS = Object.freeze([
   "cargo build",
   "compile",
@@ -26,7 +26,7 @@ const BACKGROUND_MARKERS = Object.freeze([
   "pytest",
 ]);
 
-// 后台作业六态：running 是唯一运行态，其余都是终态；状态迁移由 Supervisor 与 store 共同保证。
+// Six background job states: running is the only active state, and the rest are terminal states; Supervisor and store jointly guarantee state transitions.
 export const BackgroundJobStatus = Object.freeze({
   RUNNING: "running",
   COMPLETED: "completed",
@@ -37,7 +37,7 @@ export const BackgroundJobStatus = Object.freeze({
 } as const);
 export type BackgroundJobStatus = (typeof BackgroundJobStatus)[keyof typeof BackgroundJobStatus];
 
-// 后台领域错误的公共基类；errorCode 是工具层可返回的稳定错误码。
+// Common base class for background domain errors; errorCode is a stable error code returnable by the tool layer.
 export class BackgroundError extends Error {
   readonly errorCode: string;
 
@@ -48,7 +48,7 @@ export class BackgroundError extends Error {
   }
 }
 
-// 后台并发容量已满，拒绝新作业。
+// Background concurrency capacity is full; reject new jobs.
 export class BackgroundCapacityError extends BackgroundError {
   constructor(message: string) {
     super("background_capacity", message);
@@ -56,7 +56,7 @@ export class BackgroundCapacityError extends BackgroundError {
   }
 }
 
-// Supervisor 已关闭，拒绝新作业。
+// Supervisor is closed; rejects new jobs.
 export class BackgroundClosedError extends BackgroundError {
   constructor(message: string) {
     super("background_closed", message);
@@ -64,7 +64,7 @@ export class BackgroundClosedError extends BackgroundError {
   }
 }
 
-// 按规范 ID 查不到持久化后台作业。
+// Cannot find a persisted background job by canonical ID.
 export class BackgroundJobNotFoundError extends BackgroundError {
   constructor(message: string) {
     super("background_job_not_found", message);
@@ -72,7 +72,7 @@ export class BackgroundJobNotFoundError extends BackgroundError {
   }
 }
 
-// 当前作业状态不允许执行目标操作，例如取消已结束的作业。
+// Current job state does not allow target operations, such as cancelling finished jobs.
 export class BackgroundJobStateError extends BackgroundError {
   constructor(message: string) {
     super("background_job_state", message);
@@ -80,7 +80,7 @@ export class BackgroundJobStateError extends BackgroundError {
   }
 }
 
-// 后台持久化层写入、读取、路径校验或 schema 校验失败。
+// Background persistence layer failed on write, read, path validation, or schema validation.
 export class BackgroundStorageError extends BackgroundError {
   constructor(message: string, options?: ErrorOptions) {
     super("background_storage_error", message, options);
@@ -88,7 +88,7 @@ export class BackgroundStorageError extends BackgroundError {
   }
 }
 
-// 关闭 Supervisor 时等待运行中 worker 收束超时。
+// Timeout when waiting for running workers to terminate while closing Supervisor.
 export class BackgroundCloseTimeoutError extends BackgroundError {
   constructor(message: string) {
     super("background_close_timeout", message);
@@ -97,32 +97,32 @@ export class BackgroundCloseTimeoutError extends BackgroundError {
 }
 
 export interface BackgroundJobOptions {
-  // 规范 UUID，唯一标识作业并作为磁盘文件名。
+  // Canonical UUID, uniquely identifying a job and serving as the on-disk file name.
   readonly id: string;
-  // 触发该作业的工具调用 id，用于终态事件回到原调用上下文。
+  // Tool call id that triggered this job, used by terminal events to return to the original calling context.
   readonly sourceToolCallId: string;
-  // 触发作业的工具名，模型可见。
+  // Name of the tool triggering the job, visible to the model.
   readonly toolName: string;
-  // 当前状态；running 与终态的不变量由构造器校验。
+  // Current state; constructor validates invariants for running and final states.
   readonly status: BackgroundJobStatus;
-  // running 必须为 null，终态必须是非空 ToolResult。
+  // running must be null; terminal states must be non-empty ToolResults.
   readonly result: ToolResult | null;
 }
 
-// 领域对象在构造时验证状态不变量：running 无结果，终态必须有匹配的 ToolResult。
+// Domain objects validate state invariants during construction: running has no result, and final states must have a matching ToolResult.
 export class BackgroundJob {
-  // 规范 UUID；外部输入无法影响文件系统路径。
+  // Canonical UUID; external inputs cannot affect file system paths.
   readonly id: string;
-  // 回填原工具调用，事件注入时可关联到触发它的回合。
+  // Backfill original tool calls so event injection can correlate with the turn that triggered it.
   readonly sourceToolCallId: string;
-  // 来源工具名。
+  // Source tool name.
   readonly toolName: string;
-  // 当前持久化状态。
+  // Current persistent state.
   readonly status: BackgroundJobStatus;
-  // 终态结果，或 running 状态的 null。
+  // Terminal result, or null for the running state.
   readonly result: ToolResult | null;
 
-  // 构造时统一校验标识、状态和结果组合；对象构造后保持不可变。
+  // Centrally validate combinations of identity, status, and result at construction; objects remain immutable after construction.
   constructor(options: BackgroundJobOptions) {
     this.id = canonicalBackgroundId(options.id);
     if (
@@ -160,59 +160,59 @@ export class BackgroundJob {
   }
 }
 
-// 持久化边界：Supervisor 只依赖这五个操作，文件、数据库或其他实现可以替换。
+// Persistence boundary: Supervisor depends on these five operations only; files, databases, or other implementations can replace them.
 export interface BackgroundJobStore {
-  // 先持久化 running 记录；成功返回后 Supervisor 才启动 worker。
+  // Persists running record first; Supervisor starts worker only after successful return.
   createRunning(input: {
     readonly jobId: string;
     readonly sourceToolCallId: string;
     readonly toolName: string;
   }): Promise<BackgroundJob>;
-  // 仅把 running 原子迁移到终态；后到写者返回 undefined，避免重复发布终态。
+  // Atomically transitions only running to terminal state; later writers return undefined to avoid duplicate publishing of terminal state.
   finishRunning(
     jobId: string,
     status: Exclude<BackgroundJobStatus, "running">,
     result: ToolResult,
   ): Promise<BackgroundJob | undefined>;
-  // 进程启动恢复时把所有遗留 running 标记为 interrupted，并返回本次迁移的作业。
+  // Process startup recovery marks all leftover running jobs as interrupted, and returns jobs migrated this time.
   interruptRunning(): Promise<readonly BackgroundJob[]>;
-  // 读取单个持久化作业；不存在时抛出稳定领域错误。
+  // Read a single persisted job; throw a stable domain error when it does not exist.
   getJob(jobId: string): Promise<BackgroundJob>;
-  // 读取完整作业快照，供工具查询和恢复使用。
+  // Read full job snapshot for tool query and recovery use.
   listJobs(): Promise<readonly BackgroundJob[]>;
 }
 
-// 后台工作负载函数；signal 用于向实际执行传播取消或超时。
+// Background workload function; signal propagates cancellation or timeout to the actual execution.
 export type BackgroundOperation = (signal: AbortSignal) => Promise<ToolResult>;
 
-// 可替换的执行边界；测试可以注入受控 executor，生产环境使用 AsyncJobExecutor。
+// Replaceable execution boundary; tests can inject controlled executors, and production uses AsyncJobExecutor.
 export interface JobExecutor {
   execute(operation: BackgroundOperation, signal: AbortSignal): Promise<ToolResult>;
 }
 
-// 默认 executor：直接执行后台 operation，并透传 AbortSignal。
+// Default executor: Executes background operation directly and passes through AbortSignal.
 export class AsyncJobExecutor implements JobExecutor {
   async execute(operation: BackgroundOperation, signal: AbortSignal): Promise<ToolResult> {
     return await operation(signal);
   }
 }
 
-// 后台作业终态事件；实现 RuntimeEvent，由 EventInbox 注入 Agent Loop。
+// Background job terminal event; implements RuntimeEvent and injects into Agent Loop via EventInbox.
 export class BackgroundJobEvent implements RuntimeEvent {
-  // 事件唯一 id；Loop 用它去重，避免同一结果重复进入历史。
+  // Unique event ID; Loop uses it for deduplication to prevent the same result from entering history multiple times.
   readonly eventId: string;
-  // 对应持久化作业 id。
+  // ID corresponding to persistent jobs.
   readonly jobId: string;
-  // 触发作业的工具调用 id。
+  // Tool call id that triggered the job.
   readonly sourceToolCallId: string;
-  // 触发作业的工具名。
+  // Name of the tool triggering the job.
   readonly toolName: string;
-  // 终态状态；后台事件不会发布 running。
+  // Terminal state; background events do not publish running.
   readonly status: Exclude<BackgroundJobStatus, "running">;
-  // 终态结果。
+  // Terminal result.
   readonly result: ToolResult;
 
-  // 构造时校验标识与终态结果，构造后事件不可变。
+  // Validate identity and terminal result at construction; events are immutable after construction.
   constructor(options: {
     readonly eventId: string;
     readonly jobId: string;
@@ -236,7 +236,7 @@ export class BackgroundJobEvent implements RuntimeEvent {
     Object.freeze(this);
   }
 
-  // 把事件序列化为模型可见的纯 JSON 数据，字段名与持久化 payload 保持一致。
+  // Serialize events into pure JSON data visible to the model, keeping field names consistent with persisted payloads.
   toPayload(): Readonly<Record<string, unknown>> {
     return Object.freeze({
       event_id: this.eventId,
@@ -254,48 +254,48 @@ export class BackgroundJobEvent implements RuntimeEvent {
   }
 }
 
-// Supervisor 内部用于管理单个运行中作业的控制句柄。
+// Control handle used internally by Supervisor to manage a single running job.
 interface JobControl {
-  // 被 Supervisor 追踪的 worker 收束 Promise。
+  // Worker settling Promise tracked by Supervisor.
   readonly task: Promise<void>;
-  // 触发与执行、超时并列竞速的主动取消信号。
+  // Active cancellation signal that races alongside execution and timeout.
   readonly cancel: () => void;
 }
 
-// 内部取消信号；用于区分主动取消与作业自身失败，不对外暴露。
+// Internal cancellation signal; distinguishes active cancellation from job failures and is not exposed externally.
 class CancellationSignalError extends Error {}
 
-// Supervisor 是后台 coroutine 的唯一 owner：控制容量、超时、取消、关闭，并把终态发布为 typed event。
+// Supervisor is the sole owner of background coroutines: controls capacity, timeout, cancellation, and shutdown, and publishes terminal states as typed events.
 export class JobSupervisor {
-  // Supervisor 管理后台作业的持久状态、取消和终态事件，隔离当前模型回合。
-  // 持久化作业的唯一事实源；所有查询都读它，worker 只负责执行。
+  // Supervisor manages persistent state, cancellation, and terminal events for background jobs, isolating the current model turn.
+  // Single source of truth for persistent jobs; all queries read it, workers only execute.
   readonly #store: BackgroundJobStore;
-  // 终态事件进入 Agent Loop 的单向队列。
+  // Terminal state events enter the unidirectional queue of the Agent Loop.
   readonly #inbox: EventInbox;
-  // 执行后台 operation 的可注入边界。
+  // Injectable boundary for executing background operations.
   readonly #executor: JobExecutor;
-  // 并发运行上限。
+  // Maximum concurrency limit.
   readonly #capacity: number;
-  // 单个作业执行超时。
+  // Execution timeout for a single job.
   readonly #timeoutMs: number;
-  // 关闭时等待所有 worker 收束的上限。
+  // Upper bound when waiting for all workers to terminate during shutdown.
   readonly #closeTimeoutMs: number;
-  // 作业 id 生成器，测试可注入确定性 UUID。
+  // Job ID generator; tests can inject deterministic UUIDs.
   readonly #idGenerator: () => string;
-  // 事件 id 生成器，测试可注入确定性 UUID。
+  // Event ID generator; tests can inject a deterministic UUID.
   readonly #eventIdGenerator: () => string;
-  // 运行中作业 id 到控制句柄的映射；终态或失败后删除。
+  // Map from running job ID to control handle; delete after final state or failure.
   readonly #jobControls = new Map<string, JobControl>();
-  // 所有被追踪的 worker Promise；close 时等待它们全部 settle。
+  // All tracked worker Promises; wait for all to settle on close.
   readonly #managedTasks = new Set<Promise<unknown>>();
-  // 受管理的长期协程的 AbortController，close 时统一中止。
+  // AbortController for managed long-running coroutines, aborted uniformly on close.
   readonly #managedControllers = new Map<Promise<void>, AbortController>();
-  // 构造时启动的恢复 promise；后续提交、查询和关闭都要先等它完成。
+  // Recovery promise started at construction; subsequent submissions, queries, and shutdowns must wait for it to finish first.
   readonly #ready: Promise<void>;
-  // 关闭标记；为 true 后拒绝新作业。
+  // Shutdown flag; rejects new jobs when true.
   #closed = false;
 
-  // 注入依赖并校验容量和超时；构造时立即开始恢复遗留 running 作业。
+  // Inject dependencies and validate capacity and timeouts; start recovering legacy running jobs immediately at construction.
   constructor(options: {
     readonly store: BackgroundJobStore;
     readonly inbox: EventInbox;
@@ -334,50 +334,50 @@ export class JobSupervisor {
     this.#ready = this.#recover();
   }
 
-  // 当前仍被追踪的 worker 数量。
+  // Count of workers currently tracked.
   get activeCount(): number {
     return this.#managedTasks.size;
   }
 
-  // 暴露事件队列给 Loop 或测试，但保持 Supervisor 对事件发布路径的独占控制。
+  // Expose the event queue to the Loop or tests while retaining exclusive Supervisor control over the event publication path.
   get eventInbox(): EventInbox {
     return this.#inbox;
   }
 
-  // 是否存在尚未收束的后台作业；Loop 据此决定是否等待事件。
+  // Whether unfinished background jobs exist; the Loop uses this to decide whether to wait for events.
   get hasPendingWork(): boolean {
     return this.#jobControls.size > 0;
   }
 
-  // 等待构造期恢复完成；恢复完成后持久化状态才可用于查询和提交。
+  // Wait for construction-time recovery to complete; only then can persisted state be used for queries and commits.
   async ready(): Promise<void> {
     await this.#ready;
   }
 
-  // 取走当前已就绪的事件；limit 可选，缺省取完整批次。
+  // Drain currently ready events; limit is optional and defaults to the full batch.
   drainEvents(limit?: number): readonly RuntimeEvent[] {
     return this.#inbox.drain(limit);
   }
 
-  // 阻塞等待至少一条已就绪事件，再按 limit 取走。
+  // Blocks waiting for at least one ready event, then drains according to limit.
   async waitForEvents(limit?: number): Promise<readonly RuntimeEvent[]> {
     return await this.#inbox.wait(limit);
   }
 
-  // 确认事件已由 Loop 消费；当前实现只校验契约，为后续持久化 ack 保留边界。
+  // Confirm events are consumed by the Loop; the current implementation validates the contract, preserving boundaries for persistence acks.
   acknowledgeEvents(events: readonly RuntimeEvent[]): void {
     if (!Array.isArray(events) || !events.every((event) => isRuntimeEvent(event))) {
       throw new TypeError("events must contain RuntimeEvent values");
     }
   }
 
-  // 提交后台作业：先做容量与关闭检查，再落盘 running，最后启动 worker。
+  // Submit background job: first check capacity and shutdown state, then persist running to disk, and finally start the worker.
   async submit(input: {
     readonly sourceToolCallId: string;
     readonly toolName: string;
     readonly operation: BackgroundOperation;
   }): Promise<string> {
-    // 提交顺序固定为“容量检查 -> 先落盘 running -> 再登记 worker”，拒绝时不启动任何副作用。
+    // Submission order is fixed: capacity check -> persist running to disk -> register worker. Reject starts no side effects.
     await this.#ready;
     if (this.#closed) {
       throw new BackgroundClosedError("JobSupervisor is closed");
@@ -400,13 +400,13 @@ export class JobSupervisor {
     return jobId;
   }
 
-  // 查询只读持久化状态，不启动 worker；未知 ID 由 store 转为稳定领域错误。
+  // Queries only read persisted state without starting workers; the store converts unknown IDs into stable domain errors.
   async getJob(jobId: string): Promise<BackgroundJob> {
     await this.#ready;
     return await this.#store.getJob(canonicalBackgroundId(jobId));
   }
 
-  // 取消运行中的作业并等待 worker 收束；非运行中作业明确报状态错误。
+  // Cancel running jobs and wait for workers to converge; report explicit state errors for non-running jobs.
   async cancel(jobId: string): Promise<void> {
     await this.#ready;
     const normalized = canonicalBackgroundId(jobId);
@@ -421,7 +421,7 @@ export class JobSupervisor {
     await control.task;
   }
 
-  // 等待当前所有后台作业收束，用于测试或资源关闭前的同步点。
+  // Wait for all current background jobs to settle, serving as a sync point for tests or resource shutdown.
   async waitIdle(): Promise<void> {
     await this.#ready;
     while (this.#jobControls.size > 0) {
@@ -429,9 +429,9 @@ export class JobSupervisor {
     }
   }
 
-  // 关闭流程先停止新提交并取消运行中作业，再等待 worker 在限时内收束。
+  // Shutdown flow stops new submissions first and cancels running jobs, then waits for workers to terminate within the timeout.
   async close(): Promise<void> {
-    // 关闭先停止新提交并取消仍在运行的作业，再等待其收束。
+    // Shutdown stops new submissions first, cancels running jobs, and waits for them to terminate.
     await this.#ready;
     if (this.#closed && this.#managedTasks.size === 0) {
       return;
@@ -451,7 +451,7 @@ export class JobSupervisor {
     );
   }
 
-  // startManaged 注册受管理的长期协程（如 Cron scheduler），关闭时会自动中止其 AbortController。
+  // startManaged registers managed long-running coroutines (such as Cron schedulers) and aborts their AbortController automatically on shutdown.
   startManaged(
     operation: (signal: AbortSignal) => Promise<void>,
     _name = "managed-task",
@@ -472,7 +472,7 @@ export class JobSupervisor {
     return task;
   }
 
-  // 恢复流程把上次进程遗留的 running 全部迁移为 interrupted，并为每条迁移发布事件。
+  // Recovery migrates all running jobs left from previous processes to interrupted, publishing events for each migration.
   async #recover(): Promise<void> {
     const interrupted = await this.#store.interruptRunning();
     for (const job of interrupted) {
@@ -480,7 +480,7 @@ export class JobSupervisor {
     }
   }
 
-  // 把 worker Promise 加入管理集合；取消信号不会作为未处理 rejection 泄漏。
+  // Add worker Promises to managed sets; cancellation signals do not leak as unhandled rejections.
   #track(operation: Promise<void>): Promise<void> {
     const tracked = operation.then(
       () => undefined,
@@ -498,7 +498,7 @@ export class JobSupervisor {
     return tracked;
   }
 
-  // 运行单个后台作业：竞速执行、取消、超时，并按结果迁移到对应终态。
+  // Run a single background job: race execution, cancellation, and timeout, then transition to the corresponding final state by result.
   async #runJob(
     jobId: string,
     operation: BackgroundOperation,
@@ -506,7 +506,7 @@ export class JobSupervisor {
   ): Promise<void> {
     const controller = new AbortController();
     const execution = this.#executor.execute(operation, controller.signal);
-    // Executor 可能在取消后仍有收尾逻辑；始终等待它结束，避免 close 返回时残留 worker。
+    // Executor may have cleanup logic after cancellation; always wait for completion to avoid lingering workers on close.
     const timeoutHandle = timeout(this.#timeoutMs);
     try {
       const result = await Promise.race([execution, cancelled, timeoutHandle.promise]);
@@ -555,7 +555,7 @@ export class JobSupervisor {
     }
   }
 
-  // 把 running 原子迁移为终态；只有 store 返回的胜出写入才发布事件。
+  // Atomically migrate running to final states; publish events only on winning writes returned by the store.
   async #finish(
     jobId: string,
     status: Exclude<BackgroundJobStatus, "running">,
@@ -567,7 +567,7 @@ export class JobSupervisor {
     }
   }
 
-  // 校验终态后构造后台事件并发布到 inbox；事件发布失败会让本轮收束失败。
+  // Validate terminal state, construct background events, and publish to inbox; event publish failure causes this turn to fail resolution.
   async #publishEvent(job: BackgroundJob): Promise<void> {
     if (job.result === null || job.status === BackgroundJobStatus.RUNNING) {
       throw new BackgroundStorageError("terminal background job is missing its result");
@@ -584,21 +584,21 @@ export class JobSupervisor {
   }
 }
 
-// Dispatcher 仅转交显式标记为 background_eligible 的工具，其余调用保持同步语义。
-// 工具分派边界：仅将显式标记为 background_eligible 的调用提交给 Supervisor。
+// Dispatcher forwards only tools explicitly marked as background_eligible; other calls maintain synchronous semantics.
+// Tool dispatch boundary: submit only calls explicitly marked as background_eligible to Supervisor.
 export class BackgroundDispatcher {
-  // 原工具注册表；非后台调用仍由它直接执行。
+  // Original Tool Registry; non-background calls still execute directly through it.
   readonly #tools: ToolRegistry;
-  // 后台作业的提交与事件来源。
+  // Submission and event source for background jobs.
   readonly #supervisor: JobSupervisor;
 
-  // 绑定工具注册表与 Supervisor，Dispatcher 不持有额外状态。
+  // Bind Tool Registry and Supervisor; Dispatcher holds no extra state.
   constructor(tools: ToolRegistry, supervisor: JobSupervisor) {
     this.#tools = tools;
     this.#supervisor = supervisor;
   }
 
-  // 只有 background_eligible 且满足后台条件时才提交；其余调用保持原同步语义。
+  // Submit only when background_eligible and background conditions are met; preserve original synchronous semantics for other calls.
   async dispatch(prepared: PreparedToolCall, context: ToolContext): Promise<ToolResult> {
     const definition = prepared.definition;
     const argumentsValue = prepared.arguments;
@@ -623,7 +623,7 @@ export class BackgroundDispatcher {
         toolName: definition.name,
         operation: async () => await this.#tools.invoke(prepared, context),
       });
-      // 占位结果是普通 ToolResult，立即闭合当前工具轮；真实结果稍后经 EventInbox 注入。
+      // The placeholder result is a normal ToolResult that closes the current tool turn; EventInbox injects the real result later.
       return toolSuccess(
         JSON.stringify({
           job_id: jobId,
@@ -640,8 +640,8 @@ export class BackgroundDispatcher {
   }
 }
 
-// 显式布尔值优先；省略时才使用确定性关键词启发式，不预测任意命令耗时。
-// 判断 shell 调用是否应后台执行：显式布尔值优先，缺省时才使用关键词启发式。
+// Explicit booleans take precedence; use deterministic keyword heuristics only when omitted, without predicting arbitrary command durations.
+// Determine whether shell calls run in the background: explicit booleans take priority, fallback to keyword heuristics when omitted.
 export function shouldRunInBackground(input: BackgroundShellInput): boolean {
   if (input.run_in_background !== undefined && input.run_in_background !== null) {
     return input.run_in_background;
@@ -650,7 +650,7 @@ export function shouldRunInBackground(input: BackgroundShellInput): boolean {
   return BACKGROUND_MARKERS.some((marker) => command.includes(marker));
 }
 
-// UUID 即文件名来源，外部字符串无法作为路径进入文件系统。
+// The UUID is the source of the file name; external strings cannot enter the file system as paths.
 export function canonicalBackgroundId(value: string): string {
   if (typeof value !== "string" || !CANONICAL_UUID.test(value)) {
     throw new BackgroundStorageError("background id must be a canonical UUID");
@@ -658,15 +658,15 @@ export function canonicalBackgroundId(value: string): string {
   return value;
 }
 
-// 后台 job/event 的规范 UUID；同时作为磁盘文件名和事件幂等 id，拒绝非规范输入。
+// Canonical UUID for background jobs/events; acts as disk file name and event idempotency id, rejecting non-canonical inputs.
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
-// 状态值必须是 BackgroundJobStatus 中的字面量；未知字符串按非法输入处理。
+// State values must be literals in BackgroundJobStatus; treat unknown strings as invalid input.
 function isBackgroundJobStatus(value: unknown): value is BackgroundJobStatus {
   return Object.values(BackgroundJobStatus).includes(value as BackgroundJobStatus);
 }
 
-// shell 输入校验只关心后台所需字段；多出的字段由工具 schema 在更早边界拒绝。
+// shell input validation only checks fields needed for background; earlier boundaries reject extra fields via tool schema.
 function isBackgroundShellInput(value: unknown): value is BackgroundShellInput {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -679,7 +679,7 @@ function isBackgroundShellInput(value: unknown): value is BackgroundShellInput {
   );
 }
 
-// 调用注入的生成器并强校验返回值，确保任何 id 都能安全用于文件系统和事件去重。
+// Call the injected generator and strictly validate return values, ensuring any id is safe for file systems and event deduplication.
 function nextId(generator: () => string, label: string): string {
   try {
     return canonicalBackgroundId(generator());
@@ -690,18 +690,18 @@ function nextId(generator: () => string, label: string): string {
   }
 }
 
-// 内部超时标记，用于区分超时与其他拒绝原因。
+// Internal timeout flag, used to distinguish timeouts from other denial reasons.
 class TimeoutMarker extends Error {}
 
-// 可取消的超时句柄；promise 触发后调用 cancel 可清理定时器。
+// Cancellable timeout handle; calling cancel cleans up timers after the promise resolves.
 interface TimeoutHandle {
-  // 永不 resolve、只在截止时间 reject 的竞速 Promise。
+  // A racing Promise that never resolves and only rejects at the deadline.
   readonly promise: Promise<never>;
-  // 作业先完成时清理定时器，防止无效回调保留事件循环。
+  // Cleans up timer when job finishes first, preventing invalid callbacks from retaining the event loop.
   cancel(): void;
 }
 
-// 创建只 reject 一次的超时 promise，与后台执行/取消 promise 竞争。
+// Creates a timeout promise that rejects only once, racing against background execution or cancellation promises.
 function timeout(milliseconds: number): TimeoutHandle {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const promise = new Promise<never>((_, reject) => {
@@ -717,7 +717,7 @@ function timeout(milliseconds: number): TimeoutHandle {
   });
 }
 
-// 为任意 promise 套上超时；超时后用给定错误拒绝，并在 finally 中清理定时器。
+// Wraps any promise with a timeout; rejects with the given error on timeout and clears the timer in finally.
 async function withTimeout<T>(promise: Promise<T>, milliseconds: number, error: Error): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<T>((_, reject) => {
@@ -735,17 +735,17 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, error: 
 const backgroundJobIdSchema = z.string().regex(CANONICAL_UUID, "job_id must be a canonical UUID");
 const backgroundJobIdInputSchema = z.object({ job_id: backgroundJobIdSchema }).strict();
 
-// 后台工具与任务工具共用同一风格：schema 严格、领域错误转稳定 ToolResult、payload 使用磁盘字段名。
+// Background tools share style with task tools: strict schema, domain errors convert to stable ToolResults, and payloads use disk field names.
 export function registerBackgroundJobTools(
   registry: ToolRegistry,
   supervisor: JobSupervisor,
 ): void {
-  // 后台只暴露查询与取消两个工具；创建和运行由 shell Dispatcher 自动完成。
+  // The background exposes only query and cancel tools; shell Dispatcher automatically handles creation and execution.
   registry.register(queryBackgroundJobDefinition(supervisor));
   registry.register(cancelBackgroundJobDefinition(supervisor));
 }
 
-// 查询工具定义：读取持久化状态与终态结果，不产生副作用。
+// Query tool definition: read persisted state and terminal results without side effects.
 function queryBackgroundJobDefinition(
   supervisor: JobSupervisor,
 ): ToolDefinition<z.infer<typeof backgroundJobIdInputSchema>> {
@@ -765,7 +765,7 @@ function queryBackgroundJobDefinition(
   };
 }
 
-// 取消工具定义：取消运行中作业并返回取消后的持久化状态。
+// Cancel tool definition: cancel a running job and return its persistent state after cancellation.
 function cancelBackgroundJobDefinition(
   supervisor: JobSupervisor,
 ): ToolDefinition<z.infer<typeof backgroundJobIdInputSchema>> {
@@ -787,7 +787,7 @@ function cancelBackgroundJobDefinition(
 }
 
 function backgroundJobToolError(error: unknown) {
-  // 已知后台领域错误保留稳定错误码；未知异常继续向上抛，避免吞掉程序缺陷。
+  // Known background domain errors retain stable error codes; throw unknown exceptions upward to avoid swallowing bugs.
   if (error instanceof BackgroundError) {
     return toolError(error.errorCode, error.message);
   }
@@ -795,7 +795,7 @@ function backgroundJobToolError(error: unknown) {
 }
 
 function backgroundJobPayload(job: BackgroundJob): Readonly<Record<string, unknown>> {
-  // 模型可见字段与事件 payload 保持一致，result 统一为 content/error_code/is_error 三字段。
+  // Model-visible fields match the event payload; result unifies into three fields: content, error_code, and is_error.
   return Object.freeze({
     job_id: job.id,
     status: job.status,

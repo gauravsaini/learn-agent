@@ -16,21 +16,21 @@ import type { PermissionRequest } from "./core/permissions.js";
 import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 
-// CLI 适配器提供人工审批与审计输出；策略本身不依赖终端实现。
+// CLI adapter provides human approval and audit output; the policy itself does not depend on terminal implementations.
 class TerminalApprovalProvider implements ApprovalProvider {
-  // 在终端收敛 ask 决策；无 TTY、异常或非肯定回答一律返回 deny。
+  // Resolve ask decisions in the terminal; return deny on no TTY, exceptions, or non-affirmative answers.
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
     const definition = request.prepared.definition;
     const proposed = request.proposedDecision;
     if (definition === undefined || proposed === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write(`原因: ${proposed.reason}\n`);
-    stderr.write(`参数: ${JSON.stringify(request.prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write(`Reason: ${proposed.reason}\n`);
+    stderr.write(`Arguments: ${JSON.stringify(request.prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      // 自动化环境没有可验证的人工意图，审批必须拒绝而非默认放行。
-      stderr.write("无交互输入，默认拒绝。\n");
+      // Automated environments have no verifiable human intent; approvals must deny instead of allowing by default.
+      stderr.write("No interactive input, rejecting by default.\n");
       return new PermissionDecision(
         "deny",
         "No interactive approval input was available",
@@ -40,7 +40,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return new PermissionDecision(
@@ -55,9 +55,9 @@ class TerminalApprovalProvider implements ApprovalProvider {
 }
 
 class TerminalAuditSink implements AuditSink {
-  // 将最终权限结论写入 stderr，避免混入用户可见最终回答的 stdout。
+  // Write final permission conclusions to stderr to avoid mixing into user-visible final answer stdout.
   async record(request: PermissionRequest, decision: PermissionDecision): Promise<void> {
-    // 审计输出使用 stderr，避免污染最终回复 stdout。
+    // Audit output uses stderr to avoid polluting final response stdout.
     const definition = request.prepared.definition;
     if (definition === undefined) {
       throw new Error("audit request is incomplete");
@@ -69,15 +69,15 @@ class TerminalAuditSink implements AuditSink {
 }
 
 interface RunArguments {
-  // 映射为固定 profile 的章节号。
+  // Chapter numbers mapped to fixed profiles.
   readonly chapter: number;
-  // 传给 AgentRunner 的用户任务。
+  // User task passed to AgentRunner.
   readonly prompt: string;
 }
 
-// 解析通用或固定章节入口参数；fixedChapter 防止脚本入口被 --chapter 覆盖。
+// Parse general or fixed chapter entry parameters; fixedChapter prevents script entries from being overridden by --chapter.
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
-  // 固定章节入口复用同一解析器，并由此禁止传入另一个 --chapter。
+  // Fixed chapter entrypoints reuse the same parser, thereby forbidding passing another --chapter.
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
   let prompt: string | undefined;
@@ -110,12 +110,12 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
   return { chapter, prompt };
 }
 
-// 真实启动路径：加载配置、创建模型/文件边界、注入终端审批与审计并输出最终文本。
+// Real startup path: load configuration, create model/file boundaries, inject terminal approvals and audits, and output final text.
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 工作区以当前目录为唯一文件和命令边界，避免从命令行接收额外路径。
+  // The workspace uses the current directory as its sole file and command boundary, avoiding extra paths from command lines.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
-  // 缺少 .env 时仍构造模型，让配置错误由 OpenAIChatModel 统一抛出。
+  // Still construct the model when .env is missing, letting OpenAIChatModel throw configuration errors uniformly.
   const settings = existsSync(envPath) ? settingsFromEnvFile(envPath) : settingsFromMapping({});
   const model = new OpenAIChatModel(settings);
   const fileSystem = new NodeWorkspaceFileSystem();
@@ -151,13 +151,13 @@ export async function runProfile(
   });
 }
 
-// 进程边界将配置失败和运行失败转换为稳定中文标签与退出码。
+// The process boundary converts configuration failures and runtime failures into stable Chinese labels and exit codes.
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
-  // 进程边界将预期配置错误与运行错误映射为稳定退出码。
+  // The process boundary maps expected configuration errors and runtime errors to stable exit codes.
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;

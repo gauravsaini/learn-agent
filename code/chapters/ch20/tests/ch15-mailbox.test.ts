@@ -51,14 +51,19 @@ describe("chapter 15 mailbox", () => {
     const root = await mkdtemp(join(tmpdir(), "agent-tutorial-ch15-mailbox-"));
     try {
       const mailbox = createStore(root, [IDS[0]]);
-      const sent = await mailbox.send("lead", "writer", "整理中文资料", MailboxMessageKind.Task);
+      const sent = await mailbox.send(
+        "lead",
+        "writer",
+        "Organize Chinese materials",
+        MailboxMessageKind.Task,
+      );
       const ready = messagePath(root, "writer", MailboxState.Ready, sent.id);
       expect(JSON.parse(await readFile(ready, "utf8"))).toEqual({
         id: sent.id,
         sender: "lead",
         recipient: "writer",
         kind: "task",
-        content: "整理中文资料",
+        content: "Organize Chinese materials",
         created_at_utc: NOW.toISOString(),
       });
       expect(await mailbox.claim("writer")).toEqual(sent);
@@ -69,7 +74,7 @@ describe("chapter 15 mailbox", () => {
       );
       await expect(
         readFile(messagePath(root, "writer", MailboxState.Done, sent.id), "utf8"),
-      ).resolves.toContain("整理中文资料");
+      ).resolves.toContain("Organize Chinese materials");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -17,7 +17,7 @@ import { PermissionDecision, PermissionPolicy, PermissionRequest } from "./permi
 import type { PreparedToolCall, ToolContext, ToolRegistry, ToolResult } from "./tools.js";
 import { copyToolResult, isToolResult, toolError } from "./tools.js";
 
-// AgentRunner 是 Agent Loop：协调模型、工具、权限、Hook、后台事件与资源关闭，并保证每个工具调用都有协议回填。
+// AgentRunner is the Agent Loop: coordinates model, tools, permissions, hooks, background events, and resource shutdown, and ensures every tool call has protocol backfill.
 export class AgentRunError extends Error {
   override readonly name: string = "AgentRunError";
 }
@@ -51,33 +51,33 @@ export interface AgentRunnerOptions {
   readonly toolResultProcessor?: ToolResultProcessor;
   readonly turnLifecycle?: TurnLifecycle;
   readonly modelRequestExecutor?: ModelRequestExecutor;
-  // 可选分派器接管工具执行；后台任务等场景可以先返回占位结果，再异步补交终态。
+  // Optional dispatcher takes over tool execution; scenarios like background tasks return placeholder results first, submitting terminal states asynchronously later.
   readonly toolDispatcher?: ToolDispatcher;
-  // 可选事件泵把后台终态异步注入 Agent Loop；注入后每轮模型请求前都会先接收事件。
+  // Optional event pump injects background terminal states into Agent Loop asynchronously; events arrive before each turn model request.
   readonly eventPump?: RuntimeEventPump;
-  // 可选外部资源按逆序统一关闭，AgentRunner 在 close() 时负责收束其生命周期。
+  // Optional external resources close uniformly in reverse order; AgentRunner converges their lifecycles on close().
   readonly resources?: readonly AsyncResource[];
 }
 
-// 处理器产出必须仍满足消息配对，确保压缩不破坏模型协议。
+// Handler output must still satisfy message pairing to ensure compaction does not break model protocols.
 export interface RequestHistoryProcessor {
   prepare(history: readonly ChatMessage[]): Promise<readonly ChatMessage[]>;
 }
 
-// 动态提示 Provider 对 AgentRunner 保持零参数契约，内部数据源由组合根在构建时绑定。
+// The dynamic prompt Provider keeps a zero-argument contract with AgentRunner; the composition root binds internal data sources at build time.
 export interface SystemPromptProvider {
-  // 每轮模型调用临时读取动态系统提示，不把渲染结果写入对话历史。
+  // Temporarily read dynamic system prompt each model call without writing rendered results to conversation history.
   render(): string;
 }
 
 export interface ModelRequestExecutor {
-  // Executor 接管模型调用时必须显式 beginTurn，确保恢复状态与 Agent 回合对齐。
+  // Executor must call beginTurn explicitly when taking over model calls to align recovery state with Agent turns.
   beginTurn(): void;
   complete(request: ModelRequest): Promise<ModelReply>;
 }
 
-// TurnLifecycle 是记忆等跨请求能力的边界：beginTurn 在首轮前执行，
-// beforeModel 只给下一次模型请求附加上下文，complete 在最终结果返回前收尾。
+// TurnLifecycle is the boundary for cross-request capabilities such as memory: beginTurn executes before the first turn,
+// beforeModel attaches context only to the next model request; complete wraps up before returning the final result.
 export interface TurnLifecycle {
   beginTurn(query: string): Promise<void>;
   beforeModel(): readonly ChatMessage[];
@@ -88,33 +88,33 @@ export type ToolResultProcessor = (
   results: readonly ToolResult[],
 ) => Promise<readonly ToolResult[]> | readonly ToolResult[];
 
-// 工具分派器保留原同步执行路径的返回值契约；后台作业先返回占位结果，再通过事件泵补交终态。
+// Tool dispatchers retain return value contracts of original synchronous execution paths; background jobs return placeholder results first, then supply final states via event pumps.
 export interface ToolDispatcher {
-  // 接收已通过 schema 校验的工具调用，并返回统一 ToolResult。
+  // Receive tool calls that passed schema validation and return a unified ToolResult.
   dispatch(prepared: PreparedToolCall, context: ToolContext): Promise<ToolResult>;
 }
 
-// 事件泵是外部运行时到 Agent Loop 的单向通道：drain 取已就绪事件，waitForEvents 等待 pending 工作，acknowledgeEvents 标记已消费。
+// Event pump is a one-way channel from external runtime to Agent Loop: drain fetches ready events, waitForEvents waits for pending work, and acknowledgeEvents marks events consumed.
 export interface RuntimeEventPump {
-  // 外部运行时是否仍可能产生事件，供 Loop 决定是否等待。
+  // Whether external runtimes can still produce events, for Loop to decide whether to wait.
   readonly hasPendingWork: boolean;
-  // 非阻塞取走当前事件批次。
+  // Drains the current batch of events non-blockingly.
   drainEvents(limit?: number): readonly RuntimeEvent[];
-  // 等待并取走下一批事件。
+  // Wait for and retrieve the next batch of events.
   waitForEvents(limit?: number): Promise<readonly RuntimeEvent[]>;
-  // ack 允许异步完成，调用方必须等待确认后才能安全丢弃事件。
+  // ack allows asynchronous completion; callers must await confirmation before safely discarding the event.
   acknowledgeEvents(events: readonly RuntimeEvent[]): void | Promise<void>;
-  // 可选恢复屏障，首次 drain 前必须完成。
+  // Optional recovery barrier that must finish before the first drain.
   ready?(): Promise<void>;
 }
 
-// AsyncResource 是 Runner 可管理的关闭边界；由组合根注入，避免核心直接依赖具体后台实现。
+// AsyncResource is a shutdown boundary manageable by Runner; injected by composition root so core avoids direct dependency on concrete background implementations.
 export interface AsyncResource {
-  // Runner 关闭时按资源注入顺序逆序调用。
+  // Calls in reverse resource injection order when Runner shuts down.
   close(): Promise<void>;
 }
 
-// 观察器可在模型请求前提供指导，并在工具轮完成后更新内部状态。
+// Observers can provide guidance before model requests and update internal state after tool turns complete.
 export interface ToolRoundObserver {
   beforeModel(): readonly ChatMessage[];
   recordToolRound(toolNames: readonly string[]): void;
@@ -141,18 +141,18 @@ export class AgentRunner {
   readonly #toolResultProcessor: ToolResultProcessor | undefined;
   readonly #turnLifecycle: TurnLifecycle | undefined;
   readonly #modelRequestExecutor: ModelRequestExecutor | undefined;
-  // ToolDispatcher 可选接管实际调用；未注入时仍走 ToolRegistry.invoke 的同步路径。
+  // ToolDispatcher can take over actual calls; when not injected, it still uses the synchronous path of ToolRegistry.invoke.
   readonly #toolDispatcher: ToolDispatcher | undefined;
-  // EventPump 可选接收后台终态；未注入时保持 P01-P12 的同步 Agent Loop。
+  // EventPump optionally receives background terminal states; when omitted, maintains synchronous Agent Loop of P01-P12.
   readonly #eventPump: RuntimeEventPump | undefined;
-  // 外部资源以冻结数组保存，关闭时按逆序执行，保证依赖方先于被依赖方释放。
+  // Save external resources as frozen arrays and execute in reverse order on close, ensuring dependents release before dependencies.
   readonly #resources: readonly AsyncResource[];
   readonly #history: ChatMessage[] = [];
-  // 事件 id 去重表：同一后台事件只能作为一条 user message 注入一次 canonical history。
+  // Event ID deduplication table: a background event can be injected into canonical history only once as a user message.
   readonly #seenEventIds = new Set<string>();
-  // 延迟事件队列：用户回合内不允许 Cron 等上下文事件抢占，先暂存到 runEvents() 再消费。
+  // Deferred event queue: context events like Cron cannot preempt user turns; stage to runEvents() before consuming.
   readonly #deferredRuntimeEvents: RuntimeEvent[] = [];
-  // 运行/关闭状态组成 Runner 生命周期：并发 run、重复 close 和关闭后继续执行都会显式失败。
+  // Running and closed states form the Runner lifecycle: concurrent run, duplicate close, and execution after close all fail explicitly.
   #running = false;
   #closed = false;
   #closing = false;
@@ -182,14 +182,14 @@ export class AgentRunner {
     ) {
       throw new TypeError("modelRequestExecutor must implement beginTurn() and complete()");
     }
-    // 可选扩展契约在构造时校验，避免运行到模型或工具阶段才发现缺方法。
+    // Optional extension contracts validate at construction, avoiding missing methods during model or tool phases.
     if (
       options.toolDispatcher !== undefined &&
       typeof options.toolDispatcher.dispatch !== "function"
     ) {
       throw new TypeError("toolDispatcher must implement dispatch()");
     }
-    // 事件泵契约完整校验后才注入，未注入时 Loop 保持原有同步行为。
+    // Injects only after full event pump contract validation; Loop retains original synchronous behavior when un-injected.
     if (
       options.eventPump !== undefined &&
       (typeof options.eventPump.drainEvents !== "function" ||
@@ -199,7 +199,7 @@ export class AgentRunner {
     ) {
       throw new TypeError("eventPump must implement the RuntimeEventPump contract");
     }
-    // 资源数组只接受实现了 close() 的对象；缺省为空，关闭时不产生副作用。
+    // Resource array accepts only objects implementing close(); defaults to empty and produces no side effects on close.
     const resources = options.resources === undefined ? [] : options.resources;
     if (
       !Array.isArray(resources) ||
@@ -235,7 +235,7 @@ export class AgentRunner {
   }
 
   async run(prompt: string): Promise<RunResult> {
-    // 状态检查在进入回合前完成，避免并发 run 或关闭中的 Runner 启动模型/工具副作用。
+    // State checks complete before entering a turn to prevent concurrent runs or closing Runners from starting model or tool side effects.
     this.#ensureOpen();
     if (this.#closed) {
       throw new AgentRunError("AgentRunner is closed");
@@ -243,7 +243,7 @@ export class AgentRunner {
     if (this.#running) {
       throw new AgentRunError("AgentRunner is already running");
     }
-    // running 标记在 finally 中复位，保证异常退出后 Runner 仍可复用。
+    // Reset running flag in finally to ensure Runner remains reusable after exceptional exits.
     this.#running = true;
     try {
       return await this.#runUserTurn(prompt);
@@ -252,22 +252,22 @@ export class AgentRunner {
     }
   }
 
-  // Cron wakeup 调用的外部事件入口：无用户 prompt 时消费一个允许执行的上下文事件并启动独立回合。
+  // External event entry called by Cron wakeup: consumes one permitted context event and starts an independent turn when there is no user prompt.
   async runEvents(): Promise<RunResult | undefined> {
     this.#ensureOpen();
-    // 与用户 turn 共用运行锁；正在运行时 wakeup 直接放弃，避免并发回合。
+    // Shares the run lock with the user turn; wakeup aborts if currently running to avoid concurrent turns.
     if (this.#running) {
       return undefined;
     }
     this.#running = true;
     try {
-      // 显式允许上下文事件，调度到的新事件由此开启一轮。
+      // Explicitly allow context events, so newly scheduled events can start a turn.
       const event = await this.#acceptNextRuntimeEvent(false, true);
       if (event === undefined) {
         return undefined;
       }
       const payload = event.toPayload();
-      // 事件 payload 转为回合 prompt；事件消息已在历史中，不再经过 UserPromptSubmit hook。
+      // Event payload converts to turn prompt; event message is already in history and skips the UserPromptSubmit hook.
       const prompt = typeof payload.prompt === "string" ? payload.prompt : JSON.stringify(payload);
       return await this.#runUserTurn(prompt, event);
     } finally {
@@ -275,22 +275,22 @@ export class AgentRunner {
     }
   }
 
-  // runtimeEvent 表示事件回合：跳过普通 user prompt hook，并使用事件携带的身份与幂等键。
+  // runtimeEvent indicates an event turn: skip normal user prompt hooks and use the identity and idempotency key from the event.
   async #runUserTurn(prompt: string, runtimeEvent?: RuntimeEvent): Promise<RunResult> {
     this.#ensureOpen();
     if (runtimeEvent === undefined) {
-      // 普通用户回合追加 userMessage 并运行 UserPromptSubmit；事件回合的事件消息已由事件泵写入。
+      // Normal user turns append userMessage and run UserPromptSubmit; the event pump already writes event messages for event turns.
       const submitted = userMessage(prompt);
       const promptHook = await this.#hooks.runUserPrompt(submitted);
       this.#history.push(submitted, ...promptHook.additionalContext);
     }
     if (this.#turnLifecycle !== undefined) {
-      // 生命周期先于首轮模型请求执行；选择失败由实现方降级，不能阻塞主 Agent。
+      // Lifecycles execute before the first model request; selection failures fall back gracefully and must not block the main Agent.
       await this.#turnLifecycle.beginTurn(prompt);
     }
-    // 执行器与 memory lifecycle 对齐回合边界；P01-P10 不注入时继续直接调用 ModelClient。
+    // Executors align turn boundaries with memory lifecycles; call ModelClient directly when not injected in P01-P10.
     this.#modelRequestExecutor?.beginTurn();
-    // 事件回合使用 Cron job 的 identity 与事件 id 幂等键，不借用 CLI 用户身份。
+    // Event turns use the Cron job identity and event ID idempotency key without borrowing CLI user identity.
     const context: ToolContext = Object.freeze({
       workspace: this.#workspace,
       identity: runtimeEvent?.contextIdentity ?? this.#identity,
@@ -301,8 +301,8 @@ export class AgentRunner {
 
     let stopHookActive = false;
     for (let turn = 1; turn <= this.#maxTurns; turn += 1) {
-      // 每次模型请求前都先接收已完成的后台事件，避免事件只在首轮可见。
-      // 用户回合内只接收普通后台事件；上下文事件会被延迟，避免 Cron 打断当前用户会话。
+      // Receive completed background events before each model request to prevent events from being visible only in the first turn.
+      // In a user turn, receive only regular background events; delay context events to prevent Cron from interrupting the active user session.
       await this.#acceptNextRuntimeEvent(false, false);
       validateToolPairing(this.#history);
       const preparedHistory: unknown =
@@ -316,9 +316,9 @@ export class AgentRunner {
         throw new AgentRunError("Request history processor returned invalid messages");
       }
       const requestHistory = Object.freeze([...preparedHistory]);
-      // requestHistory 只决定模型本次能看到什么，canonical history 仍保持完整追加。
+      // requestHistory determines only what the model sees this turn; canonical history remains append-only in full.
       validateToolPairing(requestHistory);
-      // beforeModel 注入只进入本次模型请求，不写入 canonical history。
+      // beforeModel injection enters only the current model request; it does not write to canonical history.
       const turnGuidance =
         this.#turnLifecycle === undefined ? [] : this.#turnLifecycle.beforeModel();
       if (
@@ -329,8 +329,8 @@ export class AgentRunner {
       }
       const observerGuidance =
         this.#toolRoundObserver === undefined ? [] : this.#toolRoundObserver.beforeModel();
-      // 观察器指导是请求级内容，只影响当次模型输入；TODO 提醒等不写入持久历史。
-      // 系统提示在每轮组装请求前渲染，使工具列表和选中记忆等运行态变化下一轮生效。
+      // Observer guidance is request-level content and affects only current model input; TODO reminders are not written to persistent history.
+      // The system prompt renders before each turn assembly request, making tool list and selected memory changes take effect next turn.
       const systemPrompt = this.#renderSystemPrompt();
       const requestMessages = Object.freeze([
         systemMessage(systemPrompt),
@@ -344,11 +344,11 @@ export class AgentRunner {
         messages: requestMessages,
         tools: tools.openAITools(),
       });
-      // 模型边界一次只发送当前轮请求；canonical history 继续由本类维护。
+      // The model boundary sends only current turn requests; this class continues to maintain canonical history.
       const reply = await (this.#modelRequestExecutor === undefined
         ? this.#model.complete(request)
         : this.#modelRequestExecutor.complete(request));
-      // 有执行器时，内部重试、压缩和 fallback 都在 complete() 内收束，不会重新进入外层循环。
+      // When an executor exists, internal retries, compaction, and fallbacks conclude inside complete() without re-entering the outer loop.
 
       if (reply.finishReason === "length") {
         throw new IncompleteModelReplyError("Model output reached the token limit");
@@ -369,7 +369,7 @@ export class AgentRunner {
           stopHookActive = true;
           continue;
         }
-        // 当前轮已无工具调用；先等待可能有结果的后台事件，事件到达时继续下一轮。
+        // No tool calls remain in the current turn; wait for background events with potential results, continuing to the next turn on arrival.
         const event = await this.#acceptNextRuntimeEvent(true, false);
         if (event !== undefined) {
           continue;
@@ -377,7 +377,7 @@ export class AgentRunner {
         return await this.#complete(assistant.content, turn);
       }
 
-      // 一条 assistant 消息中的每个调用都必须回填一次，错误和拒绝也不例外。
+      // Each call in an assistant message must backfill once, including errors and denials.
       const results: ToolResult[] = [];
       const deferredContext: ChatMessage[] = [];
       let stoppedResultIndex: number | undefined;
@@ -404,7 +404,7 @@ export class AgentRunner {
         if (result === undefined) {
           throw new AgentRunError("Tool execution did not produce a paired result");
         }
-        // 每个工具调用都必须回填一个 tool message，否则后续模型请求会破坏协议配对。
+        // Every tool call must backfill a tool message; otherwise subsequent model requests break protocol pairing.
         this.#history.push(toolMessage(result.content, call.id));
       }
       if (this.#toolRoundObserver !== undefined) {
@@ -427,12 +427,12 @@ export class AgentRunner {
     results: readonly ToolResult[],
     calls: readonly ToolCall[],
   ): Promise<readonly ToolResult[]> {
-    // 没有处理器时也深拷贝结果，避免工具内部可变对象污染 canonical history。
+    // Deep-copy results even when no processor exists, preventing mutable internal tool objects from polluting canonical history.
     if (this.#toolResultProcessor === undefined) {
       return Object.freeze(results.map((result) => copyToolResult(result)));
     }
     try {
-      // 处理器收到只读快照；返回批次必须与工具调用数一致，否则整批按错误回填。
+      // Handlers receive a read-only snapshot; returned batches must match tool call counts, or backfill the entire batch as errors.
       const input = Object.freeze(results.map((result) => copyToolResult(result)));
       const processed: unknown = await this.#toolResultProcessor(input);
       if (!Array.isArray(processed) || processed.length !== calls.length) {
@@ -440,16 +440,16 @@ export class AgentRunner {
       }
       return Object.freeze(processed.map((result) => copyToolResult(result)));
     } catch {
-      // 处理器失败时整批返回受控错误，仍与原工具调用数量一一对应。
+      // Handlers return controlled errors in full batch on failure, still mapping one-to-one to original tool call counts.
       return Object.freeze(
         calls.map(() => toolError("tool_result_processing_error", "Tool result processing failed")),
       );
     }
   }
 
-  // 每轮模型请求前渲染系统提示；provider 缺失时使用构建期固定字符串。
+  // Render the system prompt before each model request; use the build-time fixed string when provider is missing.
   #renderSystemPrompt(): string {
-    // Provider 输出是模型边界输入，空值立即失败而不是回退到旧缓存。
+    // Provider output is model boundary input; empty values fail immediately rather than falling back to stale cache.
     const rendered =
       this.#systemPromptProvider === undefined
         ? this.#systemPrompt
@@ -465,7 +465,7 @@ export class AgentRunner {
     context: ToolContext,
     tools: ToolRegistry,
   ): Promise<ToolExecution> {
-    // 工具执行边界统一产出 ToolResult，Hook、权限和 handler 异常都不可见原始堆栈。
+    // Tool execution boundaries produce ToolResults uniformly; Hook, permission, and handler exceptions never expose raw stacks.
     let prepared: PreparedToolCall;
     try {
       prepared = tools.prepare(call);
@@ -487,13 +487,13 @@ export class AgentRunner {
       );
     }
     const effective = preHook.updatedInput === undefined ? prepared : preHook.updatedInput;
-    // Pre Hook 可阻断或建议权限，实际拒绝仍由统一权限策略裁决。
+    // Pre Hook can block or recommend permissions; unified permission policy still arbitrates actual denials.
     if (preHook.blockingError !== undefined) {
       return execution(preHook.blockingError, preHook.additionalContext);
     }
 
     if (this.#permissionPolicy !== undefined) {
-      // Hook 只提交结构化建议；系统 deny 仍在同一策略合并中拥有最高优先级。
+      // Hooks submit only structured recommendations; system deny retains highest priority in policy merging.
       try {
         const decision = await this.#permissionPolicy.decide(
           new PermissionRequest({
@@ -515,7 +515,7 @@ export class AgentRunner {
 
     let result: ToolResult;
     try {
-      // 分派器可选接管工具执行，但必须返回同一 ToolResult 契约；错误统一转为受控错误。
+      // Dispatcher can optionally take over tool execution, but must return the same ToolResult contract; errors convert uniformly to controlled errors.
       result =
         this.#toolDispatcher === undefined
           ? await tools.invoke(effective, context)
@@ -550,7 +550,7 @@ export class AgentRunner {
 
   async #complete(finalText: string, turns: number): Promise<RunResult> {
     validateToolPairing(this.#history);
-    // complete 使用完整 canonical history，让 extractor 看到请求级压缩前的原始会话。
+    // complete uses full canonical history so the extractor sees the raw session before request-level compaction.
     if (this.#turnLifecycle !== undefined) {
       await this.#turnLifecycle.complete(Object.freeze([...this.#history]));
     }
@@ -561,7 +561,7 @@ export class AgentRunner {
     });
   }
 
-  // 重复关闭是幂等操作；正在关闭时拒绝并发调用，防止资源释放顺序错乱。
+  // Repeated closing is idempotent; concurrent calls are rejected during closing to prevent disorder in resource release.
   async close(): Promise<void> {
     if (this.#closed) {
       return;
@@ -572,7 +572,7 @@ export class AgentRunner {
     this.#closing = true;
     const failures: unknown[] = [];
     try {
-      // 资源按注入顺序的逆序释放，并收集单个失败，确保一个资源异常不会中断其余清理。
+      // Resources are released in reverse injection order, collecting individual failures to ensure one resource exception does not abort remaining cleanup.
       for (const resource of [...this.#resources].reverse()) {
         try {
           await resource.close();
@@ -592,7 +592,7 @@ export class AgentRunner {
     this.#closed = true;
   }
 
-  // 事件消费先做去重：新事件先写入历史并 ack，重复事件跳过；ack 失败时回滚历史，避免再次投递产生半状态。
+  // Event consumption deduplicates first: writes new events to history and acks, skips duplicates; rolls back history on ack failure to avoid half-states on redelivery.
   async #acceptNextRuntimeEvent(
     waitForPendingWork: boolean,
     allowContextEvents: boolean,
@@ -615,13 +615,13 @@ export class AgentRunner {
       if (event === undefined || !isRuntimeEvent(event)) {
         throw new AgentRunError("Runtime event pump returned invalid events");
       }
-      // 上下文事件（如 Cron）在普通用户回合中只暂存，不在模型请求之间抢占。
+      // Context events (such as Cron) are only staged during normal user turns, not preempted between model requests.
       if (event.contextIdentity !== undefined && !allowContextEvents) {
         this.#deferredRuntimeEvents.push(event);
         events = this.#eventPump.drainEvents(1);
         continue;
       }
-      // 新事件在 ack 前先写入历史并登记 id；ack 失败会回滚，保证重试不会重复。
+      // Write new events to history and register ids before ack. If ack fails, roll back to ensure retries do not duplicate.
       const isNewEvent = !this.#seenEventIds.has(event.eventId);
       if (isNewEvent) {
         this.#history.push(runtimeEventMessage(event));
@@ -629,7 +629,7 @@ export class AgentRunner {
       }
       if (isNewEvent) {
         try {
-          // ack 可异步失败；失败时撤销历史与去重登记，避免事件半消费。
+          // ack can fail asynchronously; on failure, revert history and deduplication registrations to avoid partial consumption.
           await this.#eventPump.acknowledgeEvents(events);
         } catch (error) {
           this.#history.pop();
@@ -643,7 +643,7 @@ export class AgentRunner {
     return undefined;
   }
 
-  // 关闭或正在关闭的 Runner 都不可继续执行回合；状态错误显式抛出而不是静默降级。
+  // Closed or closing Runners cannot continue executing turns; state errors throw explicitly instead of silently degrading.
   #ensureOpen(): void {
     if (this.#closed || this.#closing) {
       throw new AgentRunError("AgentRunner is closed");

@@ -1,7 +1,7 @@
 {
   "name": "agent-tutorial",
   "version": "0.1.0",
-  "description": "20 章累进式 OpenAI Agent 教程配套实现",
+  "description": "Companion implementation for the 20-chapter progressive OpenAI Agent tutorial",
   "type": "module",
   "private": true,
   "engines": {

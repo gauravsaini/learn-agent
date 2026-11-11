@@ -14,15 +14,15 @@ import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 import type { PreparedToolCall, ToolContext } from "./core/tools.js";
 
-// CLI 层提供两个入口：固定章节脚本和通用 CLI，二者共享权限、配置和错误处理边界。
+// The CLI layer provides two entry points: fixed chapter scripts and general CLI, sharing permission, configuration, and error handling boundaries.
 //
-// TerminalAuthorizer 是 shell 这类 execute 工具的人工授权点；
-// 无交互终端、回车、非 y/yes 或审批异常都会 fail-closed 拒绝执行。
-// runCli / runProfile 只负责参数解析和启动装配，不包含 Agent 循环逻辑。
+// TerminalAuthorizer is the manual approval point for execute tools such as shell;
+// Non-interactive terminals, Enter, non-y/yes inputs, or approval exceptions all fail-closed to deny execution.
+// runCli / runProfile only handle argument parsing and startup assembly, containing no Agent Loop logic.
 //
-// 终端是副作用工具的人工授权边界；没有交互终端时必须拒绝执行。
+// The terminal is the manual authorization boundary for side-effect tools; execution must be denied when there is no interactive terminal.
 class TerminalAuthorizer implements ToolAuthorizer {
-  // 在真实终端中请求本次副作用调用的明确批准；任何交互异常均拒绝执行。
+  // Request explicit approval for this side-effect call in a real terminal; deny execution on any interaction exception.
   async authorize(
     prepared: PreparedToolCall,
     _context: ToolContext,
@@ -31,17 +31,17 @@ class TerminalAuthorizer implements ToolAuthorizer {
     if (definition === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write("原因: PowerShell command execution requires explicit approval.\n");
-    stderr.write(`参数: ${JSON.stringify(prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write("Reason: PowerShell command execution requires explicit approval.\n");
+    stderr.write(`Arguments: ${JSON.stringify(prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return { allowed: false, reason: "No interactive approval input was available" };
     }
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return {
@@ -54,15 +54,15 @@ class TerminalAuthorizer implements ToolAuthorizer {
   }
 }
 
-// CLI 解析完成后的最小启动参数；章节与用户请求缺一不可。
+// Minimal startup parameters after CLI parsing; both chapter and user request are required.
 interface RunArguments {
-  // 解析后的目标章节，随后必须映射到实际迁移的 profile。
+  // Parsed target chapter, which must subsequently map to an actual migrated profile.
   readonly chapter: number;
-  // 传入 AgentRunner.run 的原始用户任务文本。
+  // Raw user task text passed to AgentRunner.run.
   readonly prompt: string;
 }
 
-// 解析通用入口或固定章节入口的参数；固定入口自行补齐 chapter，禁止用户覆盖。
+// Parse arguments for general or fixed chapter entry points; fixed entries populate chapter automatically, forbidding user overrides.
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
@@ -96,9 +96,9 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
   return { chapter, prompt };
 }
 
-// 真实运行路径：读取配置、创建 SDK 适配器、组装 Agent 并输出最终文本。
+// Real execution path: read configuration, create SDK adapters, assemble the Agent, and output final text.
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 先完成配置校验，再创建模型和 Agent，避免缺少密钥时启动外部调用。
+  // Completes configuration validation before creating model and Agent, avoiding external calls when keys are missing.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
   const settings = existsSync(envPath) ? settingsFromEnvFile(envPath) : settingsFromMapping({});
@@ -114,7 +114,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
 }
 
 export async function runCli(argv: readonly string[]): Promise<number> {
-  // 通用 CLI 必须以 run 子命令开头，再自行选择已迁移章节。
+  // The general CLI must start with the run subcommand, then choose a migrated chapter.
   return runWithErrorHandling(async () => {
     if (argv[0] !== "run") {
       throw new Error("Expected command: run");
@@ -128,7 +128,7 @@ export async function runProfile(
   profile: ChapterProfile,
   argv: readonly string[],
 ): Promise<number> {
-  // 固定章节脚本不接受 --chapter，避免入口与 profile 指向不同章节。
+  // Fixed chapter scripts reject --chapter to prevent entrypoints and profiles from targeting different chapters.
   return runWithErrorHandling(async () => {
     const parsed = parseRunArguments(argv, profile.chapter);
     return await execute(profile, parsed.prompt);
@@ -136,18 +136,18 @@ export async function runProfile(
 }
 
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
-  // CLI 边界把领域配置错误映射为可区分的退出码，内部错误不在此吞没。
+  // CLI boundary maps domain configuration errors to distinguishable exit codes; internal errors are not swallowed here.
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;
   }
 }
 
-// 被其他模块导入时不启动进程；只有作为直接入口时才消费 process.argv。
+// Does not start processes when imported by other modules; consumes process.argv only as a direct entry point.
 const entryPath = process.argv[1];
 if (entryPath !== undefined && fileURLToPath(import.meta.url) === resolve(entryPath)) {
   process.exitCode = await runCli(process.argv.slice(2));

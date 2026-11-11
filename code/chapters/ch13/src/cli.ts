@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// CLI 是真实运行入口：负责参数解析、环境读取、模型与持久任务存储装配，以及用户审批/审计边界。
+// CLI is the real runtime entry point: handles argument parsing, environment reading, model and persistent task store assembly, and user approval/audit boundaries.
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -24,7 +24,7 @@ import { EventInbox } from "./core/events.js";
 import { JobSupervisor } from "./features/background.js";
 import { RecoveryConfig } from "./features/recovery.js";
 
-// 终端审批只做用户确认，不缓存决策；非 TTY 时默认拒绝。
+// Terminal approval only performs user confirmation and does not cache decisions; non-TTY defaults to deny.
 class TerminalApprovalProvider implements ApprovalProvider {
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
     const definition = request.prepared.definition;
@@ -32,11 +32,11 @@ class TerminalApprovalProvider implements ApprovalProvider {
     if (definition === undefined || proposed === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write(`原因: ${proposed.reason}\n`);
-    stderr.write(`参数: ${JSON.stringify(request.prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write(`Reason: ${proposed.reason}\n`);
+    stderr.write(`Arguments: ${JSON.stringify(request.prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return new PermissionDecision(
         "deny",
         "No interactive approval input was available",
@@ -46,7 +46,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return new PermissionDecision(
@@ -60,7 +60,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
   }
 }
 
-// 审计输出到 stderr，保证 stdout 只承载最终回答。
+// Audit output goes to stderr, ensuring stdout carries only final answers.
 class TerminalAuditSink implements AuditSink {
   async record(request: PermissionRequest, decision: PermissionDecision): Promise<void> {
     const definition = request.prepared.definition;
@@ -79,7 +79,7 @@ interface RunArguments {
 }
 
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
-  // CLI 只接受 --chapter 和 --prompt；未知参数立即失败，避免静默忽略用户输入。
+  // CLI accepts only --chapter and --prompt; unknown arguments fail immediately to avoid silently ignoring user input.
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
   let prompt: string | undefined;
@@ -113,21 +113,21 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
 }
 
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 当前目录是文件与命令的唯一工作区边界。
+  // The current directory is the sole workspace boundary for files and commands.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
   const requiresFallback = profile.capabilities.has("recovery");
-  // recovery 能力要求同时读取 fallback model，缺项在创建网络客户端前失败。
+  // recovery capability requires reading fallback models simultaneously; missing items fail before creating network clients.
   const settings = existsSync(envPath)
     ? settingsFromEnvFile(envPath, requiresFallback)
     : settingsFromMapping({}, requiresFallback);
   const model = new OpenAIChatModel(settings);
   const fileSystem = new NodeWorkspaceFileSystem();
-  // P12 能力位决定是否创建 JSON TaskStore，避免低版本误启动持久化任务边界。
+  // P12 capability bit determines whether to create JSON TaskStore, preventing earlier versions from starting persistent task boundaries.
   const taskStore = profile.capabilities.has("task_dag_json")
     ? new JsonTaskStore(workspace)
     : undefined;
-  // P13 能力位决定是否创建 JSON 后台存储与 EventInbox；低版本不创建后台资源。
+  // P13 capability bit determines whether to create JSON background store and EventInbox; earlier versions create no background resources.
   const backgroundSupervisor = profile.capabilities.has("background")
     ? new JobSupervisor({
         store: new JsonBackgroundJobStore(workspace),
@@ -158,7 +158,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
     stdout.write(`${result.finalText}\n`);
     return 0;
   } finally {
-    // Runner 关闭时一并收束后台作业；Runner 未创建成功时由 Supervisor 兜底关闭。
+    // Background jobs close when Runner shuts down; Supervisor closes them as fallback when Runner creation fails.
     try {
       if (runner !== undefined) {
         await runner.close();
@@ -172,7 +172,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
 }
 
 function requiredFallbackModel(fallbackModel: string | undefined): string {
-  // fallback 是第 11 章显式配置项，缺省直接进入配置错误，不回退到主模型。
+  // fallback is an explicit Chapter 11 configuration; omitting it raises a configuration error rather than falling back to the primary model.
   if (fallbackModel === undefined) {
     throw new ConfigurationError(["OPENAI_FALLBACK_MODEL"]);
   }
@@ -180,7 +180,7 @@ function requiredFallbackModel(fallbackModel: string | undefined): string {
 }
 
 function liveHooks(): HookRegistry {
-  // 真实运行只打印 Hook 事件作为观测，不改变任何决策语义。
+  // Real runs only print Hook events for observability and do not change any decision semantics.
   const hooks = new HookRegistry();
   hooks.register("UserPromptSubmit", () => {
     stderr.write("[Hook] UserPromptSubmit\n");
@@ -234,11 +234,11 @@ export async function runProfile(
 }
 
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
-  // 进程边界将预期配置错误与运行错误映射为稳定退出码。
+  // The process boundary maps expected configuration errors and runtime errors to stable exit codes.
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;

@@ -1,24 +1,24 @@
-// 运行时事件协议：外部异步结果必须先实现 RuntimeEvent 才能进入 EventInbox；
-// Agent Loop 批量取出已就绪事件，去重后以普通 user 消息注入历史。
+// Runtime event protocol: External asynchronous results must implement RuntimeEvent before entering EventInbox;
+// Agent Loop batches ready events, deduplicates them, and injects them into history as normal user messages.
 import { userMessage } from "./messages.js";
 import type { UserMessage } from "./messages.js";
 
 export interface RuntimeEvent {
-  // 事件携带稳定 id 与可选幂等键，供 Loop 去重并将外部结果安全注入下一回合。
+  // Event carries stable ID and optional idempotency key for Loop to deduplicate and safely inject external results into the next turn.
   readonly eventId: string;
   readonly contextIdentity?: string;
   readonly idempotencyKey?: string;
-  // 把事件序列化为模型可见的纯 JSON 数据；实现方负责稳定字段名。
+  // Serialize events into pure JSON data visible to the model; implementors are responsible for stable field names.
   toPayload(): Readonly<Record<string, unknown>>;
 }
 
 export interface RuntimeEventBatchPosition {
-  // 批量注入时记录事件在本批消息中的位置，帮助模型识别这是多条结果中的第几条。
+  // Record event positions within the message batch during batch injection to help models identify which result among multiple this is.
   readonly index: number;
   readonly total: number;
 }
 
-// 校验外部对象是否满足 RuntimeEvent 契约；不信任运行时的鸭子类型输入。
+// Validate whether external objects satisfy the RuntimeEvent contract; do not trust runtime duck-typed inputs.
 export function isRuntimeEvent(value: unknown): value is RuntimeEvent {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -39,11 +39,11 @@ export function isRuntimeEvent(value: unknown): value is RuntimeEvent {
 }
 
 export class EventInbox {
-  // Inbox 是运行时到 Agent Loop 的单向队列；drain 保持 FIFO，并允许一次移交整批事件所有权。
+  // Inbox is a one-way queue from runtime to Agent Loop; drain preserves FIFO and transfers ownership of the entire event batch at once.
   readonly #events: RuntimeEvent[] = [];
   readonly #waiters: Array<() => void> = [];
 
-  // 发布一条事件并唤醒等待者；只接受已通过 RuntimeEvent 校验的对象。
+  // Publish an event and wake waiters; accept only objects validated by RuntimeEvent.
   publish(event: RuntimeEvent): void {
     if (!isRuntimeEvent(event)) {
       throw new TypeError("EventInbox only accepts RuntimeEvent values");
@@ -54,7 +54,7 @@ export class EventInbox {
     }
   }
 
-  // 取走当前已就绪的事件；limit 缺省为完整 FIFO 批次。
+  // Drain currently ready events; limit defaults to the complete FIFO batch.
   drain(limit?: number): readonly RuntimeEvent[] {
     if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
       throw new Error("limit must be a positive integer or undefined");
@@ -63,7 +63,7 @@ export class EventInbox {
     return Object.freeze(this.#events.splice(0, count));
   }
 
-  // 阻塞等待队列非空后取走一批事件；由 Agent Loop 在等待后台结果时调用。
+  // Blocks waiting for non-empty queue then drains a batch of events; called by Agent Loop when waiting for background results.
   async wait(limit?: number): Promise<readonly RuntimeEvent[]> {
     while (this.#events.length === 0) {
       await new Promise<void>((resolve) => this.#waiters.push(resolve));
@@ -72,8 +72,8 @@ export class EventInbox {
   }
 }
 
-// 事件以普通 user 消息进入历史，但不伪装成 tool result，也不携带 tool_call_id。
-// batch 只在一次 drain 注入多条事件时使用；未传时按单条事件处理。
+// Events enter history as normal user messages without disguising as tool results or carrying tool_call_id.
+// batch is used only when one drain injects multiple events; process as a single event when not passed.
 export function runtimeEventMessage(
   event: RuntimeEvent,
   batch?: RuntimeEventBatchPosition,

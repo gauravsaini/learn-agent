@@ -5,9 +5,9 @@ import { MemorySession } from "./memory.js";
 import { SkillRegistry } from "./skills.js";
 import { ToolRegistry } from "../core/tools.js";
 
-// P10 动态系统提示渲染：身份、工具、工作区、Skill 与记忆由各自数据源提供，按固定顺序组装。
+// P10 dynamic system prompt rendering: sources provide identity, tools, workspace, Skill, and memory in fixed order.
 
-// JSON 类型只允许可稳定序列化的值，函数、符号、Date 等对象不进入 Prompt。
+// JSON types allow only stably serializable values; objects such as functions, symbols, and Date do not enter Prompt.
 export type JsonScalar = boolean | number | string | null;
 export interface JsonObject {
   readonly [key: string]: JsonValue;
@@ -16,7 +16,7 @@ export interface JsonObject {
 export type JsonValue = JsonScalar | readonly JsonValue[] | JsonObject;
 
 export class PromptContextError extends Error {
-  // 动态 prompt 只接收可稳定序列化的 JSON 上下文，拒绝函数、原型对象和循环引用。
+  // The dynamic prompt only accepts stably serializable JSON context; reject functions, prototype objects, and circular references.
   override readonly name: string = "PromptContextError";
 }
 
@@ -27,25 +27,25 @@ export interface DynamicPromptRendererOptions {
   readonly context: JsonObject;
   readonly skills?: SkillRegistry;
   readonly memory?: MemorySession;
-  // status 是可选尾部段落，用来承载频繁变化但必须与主 Prompt 分开的状态。
+  // status is an optional trailing section carrying frequently changing state that must remain separate from the main Prompt.
   readonly status?: JsonObject;
 }
 
-// 允许 Provider 在每次渲染时重新读取运行态状态，而不是永久绑定构建期的 JSON 快照。
+// Allows Provider to re-read runtime state on each render, instead of permanently binding build-time JSON snapshots.
 export type DynamicPromptStatusProvider = () => JsonObject;
 
 export class DynamicPromptRenderer {
-  // 缓存键覆盖所有模型可见输入，任何工具、记忆或 Skill 变化都会失效。
+  // The cache key covers all model-visible inputs; any tool, memory, or Skill change invalidates it.
   #lastKey: string | undefined;
   #lastPrompt: string | undefined;
   #cacheHits = 0;
 
-  // 缓存命中次数用于测试和观测，证明相同输入不会重复组装字符串。
+  // Cache hit counts are used for tests and observability, proving identical inputs do not reassemble strings.
   get cacheHits(): number {
     return this.#cacheHits;
   }
 
-  // render 是唯一入口：先校验对象类型，再规范化 context、生成缓存键并输出固定顺序 sections。
+  // render is the only entry point: validate object type, normalize context, generate cache keys, and output ordered sections.
   render(options: DynamicPromptRendererOptions): string {
     const identity = normalizeIdentity(options.identity);
     if (!(options.tools instanceof ToolRegistry)) {
@@ -61,12 +61,12 @@ export class DynamicPromptRenderer {
       throw new TypeError("memory must be MemorySession or undefined");
     }
 
-    // context 先转成规范 JSON，后续缓存键和展示文本都基于同一份规范化值。
+    // context is normalized to JSON first; subsequent cache keys and display text use the same normalized value.
     const context = normalizeContext(options.context);
     const contextJson = stableJson(context);
     const tools = options.tools.names;
     const workspace = resolve(options.workspace);
-    // Skill 目录和选中记忆按需读取；正文仍由各自模块持有，这里只拿渲染所需摘要。
+    // Skill catalog and selected memories are read on demand; respective modules retain full text, fetching only summaries needed for rendering here.
     const skillCatalog = options.skills === undefined ? "" : options.skills.renderCatalog();
     const memoryBody =
       options.memory === undefined || options.memory.selected.length === 0
@@ -74,7 +74,7 @@ export class DynamicPromptRenderer {
         : options.memory.renderSelected();
     const status = options.status === undefined ? undefined : normalizeContext(options.status);
     const statusJson = status === undefined ? undefined : stableJson(status);
-    // 缓存键覆盖所有模型可见输入，任一运行态变化都会失效。
+    // The cache key covers all model-visible inputs; any runtime state change invalidates it.
     const cacheInput: Record<string, JsonValue> = {
       context,
       identity,
@@ -92,10 +92,10 @@ export class DynamicPromptRenderer {
       return this.#lastPrompt;
     }
 
-    // 工具列表为空也输出 "(none)"，让模型明确知道当前没有可用工具。
+    // Output "(none)" even when tool lists are empty, letting models know clearly that no tools are currently available.
     const toolCatalog = tools.length === 0 ? "(none)" : tools.map((name) => `- ${name}`).join("\n");
     const sections = [
-      // 固定段落顺序让提示词可预测，后续可选段落只追加不插队。
+      // Fixed section order keeps prompts predictable; subsequent optional sections only append without interleaving.
       `## identity\n${identity}\ncontext: ${contextJson}`,
       `## tools\n${toolCatalog}`,
       `## workspace\n${workspace}`,
@@ -107,10 +107,10 @@ export class DynamicPromptRenderer {
       sections.push(`## memory\n${memoryBody}`);
     }
     if (statusJson !== undefined) {
-      // 运行态状态固定在最后，状态变化不会移动或重排前面的稳定段落。
+      // Runtime state is fixed at the end. State changes do not move or reorder preceding stable sections.
       sections.push(`## runtime_status\n${statusJson}`);
     }
-    // 固定 section 顺序是契约；可选 section 只追加到尾部，不改变前面内容的相对位置。
+    // Fixed section order is a contract; append optional sections only to the end without changing relative positions of earlier content.
     const prompt = sections.join("\n\n");
     this.#lastKey = key;
     this.#lastPrompt = prompt;
@@ -123,9 +123,9 @@ export interface DynamicPromptProviderOptions extends DynamicPromptRendererOptio
   readonly statusProvider?: DynamicPromptStatusProvider;
 }
 
-// Provider 对 AgentRunner 暴露零参数 render()，把渲染器与运行态对象的绑定收在组合根。
+// Provider exposes zero-argument render() to AgentRunner, confining renderer and runtime object binding to the composition root.
 export class DynamicPromptProvider implements SystemPromptProvider {
-  // Provider 在每轮请求时重新渲染，读取当前工具、Skill 与选中记忆。
+  // Provider re-renders on each request turn, reading current tools, Skill, and selected memories.
   readonly #renderer: DynamicPromptRenderer;
   readonly #identity: string;
   readonly #tools: ToolRegistry;
@@ -142,7 +142,7 @@ export class DynamicPromptProvider implements SystemPromptProvider {
     if (options.statusProvider !== undefined && typeof options.statusProvider !== "function") {
       throw new TypeError("statusProvider must be a function");
     }
-    // Provider 在构建阶段绑定运行态对象，后续 render() 只做转发，不重新发现依赖。
+    // Provider binds runtime objects during construction; subsequent render() only forwards and does not rediscover dependencies.
     this.#renderer = options.renderer;
     this.#identity = options.identity;
     this.#tools = options.tools;
@@ -167,7 +167,7 @@ export class DynamicPromptProvider implements SystemPromptProvider {
 }
 
 function normalizeIdentity(identity: string): string {
-  // identity 是 Prompt 可见输入，空字符串会在进入缓存前失败。
+  // identity is a Prompt-visible input; empty strings fail before entering the cache.
   if (typeof identity !== "string") {
     throw new TypeError("identity must be a string");
   }
@@ -179,7 +179,7 @@ function normalizeIdentity(identity: string): string {
 }
 
 function normalizeContext(context: unknown): JsonObject {
-  // context 必须是普通 JSON object；对象之外的类型直接拒绝。
+  // context must be a plain JSON object; reject non-object types immediately.
   if (!isPlainObject(context)) {
     throw new PromptContextError("context must be a JSON object");
   }
@@ -190,7 +190,7 @@ function normalizeContext(context: unknown): JsonObject {
   return normalized;
 }
 
-// 递归规范化所有嵌套值：拒绝 NaN、无穷大、symbol key、非普通对象和循环引用。
+// Recursively normalizes all nested values: Rejects NaN, infinity, symbol keys, non-plain objects, and circular references.
 function normalizeJsonValue(value: unknown, active: Set<object>): JsonValue {
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     return value;
@@ -202,7 +202,7 @@ function normalizeJsonValue(value: unknown, active: Set<object>): JsonValue {
     return value;
   }
   if (Array.isArray(value)) {
-    // active 集合保存当前递归路径上的对象，用于检测循环引用。
+    // The active set stores objects on the current recursive path to detect circular references.
     if (active.has(value)) {
       throw new PromptContextError("context contains a cyclic JSON array");
     }
@@ -214,7 +214,7 @@ function normalizeJsonValue(value: unknown, active: Set<object>): JsonValue {
     }
   }
   if (isPlainObject(value)) {
-    // 只接受字符串 key；对象 key 排序后构造，使缓存和展示输入稳定。
+    // Only accept string keys; construct object keys after sorting to keep cache and display inputs stable.
     if (Reflect.ownKeys(value).some((key) => typeof key !== "string")) {
       throw new PromptContextError("context JSON object keys must be strings");
     }
@@ -240,7 +240,7 @@ function normalizeJsonValue(value: unknown, active: Set<object>): JsonValue {
   throw new PromptContextError("context contains an unsupported JSON value");
 }
 
-// 普通对象指原型恰为 Object.prototype 的对象；类实例、Map、Set 等不作为 JSON object 接受。
+// Plain objects refer to objects whose prototype is Object.prototype; class instances, Maps, and Sets are not accepted as JSON objects.
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" &&
@@ -250,7 +250,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   );
 }
 
-// 对规范 JSON 递归按键排序序列化，确保语义相同的 context 总是生成同一缓存键。
+// Recursively serialize canonical JSON sorted by key to ensure semantically identical contexts always generate the same cache key.
 function stableJson(value: JsonValue): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => stableJson(item)).join(",")}]`;
@@ -262,7 +262,7 @@ function stableJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-// 简单字符串排序用于稳定对象 key，避免依赖引擎默认枚举顺序。
+// Simple string sorting stabilizes object keys, avoiding reliance on engine default enumeration order.
 function compareText(left: string, right: string): number {
   if (left < right) {
     return -1;

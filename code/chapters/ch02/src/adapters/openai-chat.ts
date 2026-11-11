@@ -1,8 +1,8 @@
 /**
- * OpenAI Chat Completions 适配器：把核心 ModelRequest 转换为 SDK 请求，
- * 再把 unknown 供应商响应逐层收窄为 ModelReply。
- * 只支持 function tool_calls；legacy function_call、多 choice、非法 usage 都会显式失败。
- * maxRetries 设为 0，重试由后续章节统一恢复层控制。
+ * OpenAI Chat Completions adapter: converts core ModelRequest into SDK requests,
+ * Then narrow unknown provider responses layer by layer to ModelReply.
+ * Only function tool_calls are supported; legacy function_call, multiple choices, and invalid usage fail explicitly.
+ * maxRetries is set to 0. A unified recovery layer in later chapters controls retries.
  */
 import OpenAI from "openai";
 import type {
@@ -23,13 +23,13 @@ import type {
 } from "../core/model.js";
 import type { OpenAISettings } from "../config.js";
 
-// 供应商响应违背本地消息契约时使用专用错误，避免将未知结构带入 Agent Loop。
+// Dedicated error used when vendor responses violate local message contracts, avoiding bringing unknown structures into Agent Loop.
 export class OpenAIResponseError extends Error {
   override readonly name = "OpenAIResponseError";
 }
 
 export interface OpenAIClientBoundary {
-  // 最小 SDK 表面既便于注入测试替身，也限制适配器对供应商客户端的耦合。
+  // A minimal SDK surface eases test double injection and limits adapter coupling to provider clients.
   readonly chat: {
     readonly completions: {
       create(request: ChatCompletionCreateParamsNonStreaming): Promise<unknown>;
@@ -47,7 +47,7 @@ export class OpenAIChatModel implements ModelClient {
         ? new OpenAI({
             apiKey: settings.apiKey,
             baseURL: settings.baseUrl,
-            // 重试由第 11 章的供应商无关恢复层统一控制，SDK 不得隐藏额外请求。
+            // Retries are controlled uniformly by the provider-agnostic recovery layer from Chapter 11; the SDK must not hide additional requests.
             maxRetries: 0,
           })
         : client;
@@ -55,7 +55,7 @@ export class OpenAIChatModel implements ModelClient {
   }
 
   async complete(request: ModelRequest): Promise<ModelReply> {
-    // 先验证历史，禁止向 API 发送有未配对工具调用的消息序列。
+    // Validates history first, forbidding sending message sequences with unpaired tool calls to the API.
     validateToolPairing(request.messages);
     if (
       request.maxTokens !== undefined &&
@@ -71,7 +71,7 @@ export class OpenAIChatModel implements ModelClient {
       ...(request.maxTokens === undefined ? {} : { max_completion_tokens: request.maxTokens }),
     });
     const normalized = normalizeResponse(response);
-    // 适配器输出仅使用内部消息工厂构造，维持不可变与工具调用 ID 约束。
+    // Adapter output is constructed only with internal message factories, maintaining immutability and tool call ID constraints.
     return Object.freeze({
       message: assistantMessage(normalized.content, normalized.calls),
       finishReason: normalized.finishReason,
@@ -87,7 +87,7 @@ interface NormalizedResponse {
   readonly usage?: TokenUsage;
 }
 
-// unknown 响应逐层收窄；P02 要求一个请求只对应一个 choice。
+// unknown responses narrow down layer by layer; P02 requires one choice per request.
 function normalizeResponse(response: unknown): NormalizedResponse {
   if (typeof response !== "object" || response === null) {
     throw new OpenAIResponseError("Chat completion response must be an object");
@@ -131,7 +131,7 @@ function normalizeResponse(response: unknown): NormalizedResponse {
     throw new OpenAIResponseError("Chat completion tool_calls must be an array");
   }
   const calls = (rawCalls === undefined ? [] : rawCalls).map(normalizeToolCall);
-  // refusal 没有普通正文时作为可展示文本保留，避免丢失模型的拒绝说明。
+  // refusal is retained as displayable text when normal body text is absent to avoid losing model refusal explanations.
   const rawUsage = Reflect.get(response, "usage");
   const content = rawContent !== null ? rawContent : typeof refusal === "string" ? refusal : null;
   return Object.freeze({
@@ -143,7 +143,7 @@ function normalizeResponse(response: unknown): NormalizedResponse {
 }
 
 function normalizeToolCall(call: unknown): ReturnType<typeof toolCall> {
-  // 只支持 Chat Completions 的 function 工具协议，旧协议显式失败。
+  // Only support the Chat Completions function tool protocol; fail explicitly on legacy protocols.
   if (typeof call !== "object" || call === null) {
     throw new OpenAIResponseError("Tool call must be an object");
   }
@@ -175,7 +175,7 @@ function isFinishReason(value: unknown): value is FinishReason {
 }
 
 function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
-  // 内部 role 联合类型逐项映射，新增 role 时 TypeScript 会要求补齐分支。
+  // Maps internal role union type item by item; TypeScript requires completing branches when adding new roles.
   switch (message.role) {
     case "system":
     case "user":
@@ -210,7 +210,7 @@ function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
   };
 }
 
-// usage 是供应商不可信响应的一部分，三个计数必须完整且为非负整数。
+// usage is part of untrusted provider responses; all three counts must be present and non-negative integers.
 function normalizeUsage(usage: unknown): TokenUsage {
   if (typeof usage !== "object" || usage === null) {
     throw new OpenAIResponseError("Chat completion usage must be an object");

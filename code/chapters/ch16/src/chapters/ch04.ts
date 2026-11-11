@@ -1,4 +1,4 @@
-// 固定入口以 P04 运行，启用 Hook 生命周期。
+// Fixed entrypoint runs with P04, enabling the Hook lifecycle.
 import { runProfile } from "../cli.js";
 import { P04 } from "../core/profiles.js";
 

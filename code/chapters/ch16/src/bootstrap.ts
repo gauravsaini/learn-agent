@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook、TODO 观察器、Skill 目录、持久任务存储和后台作业 Supervisor；P16 追加协议运行时与 plan gate。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, TODO observers, Skill catalogs, persistent task stores, and background job Supervisors by chapter capabilities; P16 appends protocol runtime and plan gate.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -40,37 +40,37 @@ const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// P16 将协议运行时的 plan gate 追加到队友权限策略，不能由 Hook 绕过。
+// P16 appends plan gate of protocol runtime to teammate permission policy; hooks cannot bypass it.
 export interface BuildDependencies {
-  // 模型调用与摘要、恢复、队友 Runner 共用的外部模型边界。
+  // External model boundary shared by model calls, summarization, recovery, and teammate Runners.
   readonly model: ModelClient;
-  // 所有文件、状态和持久化适配器使用的工作区根。
+  // Workspace root used by all file, state, and persistence adapters.
   readonly workspace: string;
-  // Shell 工具的执行适配器；未注入时由组合根创建默认实现。
+  // Execution adapter for Shell tool; composition root creates default implementation when omitted.
   readonly commandRunner?: CommandRunner;
-  // 文件工具的 workspace 边界适配器。
+  // Workspace boundary adapter for file tools.
   readonly fileSystem?: WorkspaceFileSystem;
-  // ask 权限的审批边界，P03+ 缺失时策略 fail-closed。
+  // The approval boundary for ask permission; policy is fail-closed when P03+ is missing.
   readonly approvalProvider?: ApprovalProvider;
-  // 最终权限决策的审计边界。
+  // Audit boundary for final permission decisions.
   readonly auditSink?: AuditSink;
-  // 生命周期 Hook 注册表，只有具备 hooks 能力的 profile 才允许注入。
+  // Lifecycle Hook registry; only profiles with hooks capability are allowed to inject.
   readonly hooks?: HookRegistry;
-  // Agent Loop 单次运行允许的最大模型回合数。
+  // Maximum model turns allowed for a single Agent Loop run.
   readonly maxTurns?: number;
-  // 当前 Agent 身份，用于工具上下文和动态 Prompt。
+  // Current Agent identity, used for tool context and dynamic Prompts.
   readonly identity?: string;
-  // P11+ 恢复与 fallback 模型的统一 deadline 配置。
+  // Unified deadline configuration for P11+ recovery and fallback models.
   readonly recoveryConfig?: RecoveryConfig;
-  // P12+ 任务工具使用的持久化任务图。
+  // Persistent task graph used by P12+ task tools.
   readonly taskStore?: TaskStore;
-  // P13+ 后台作业 supervisor，与事件 Inbox 共享生命周期。
+  // P13+ background job supervisor, sharing lifecycle with event Inbox.
   readonly backgroundSupervisor?: JobSupervisor;
-  // P14+ Cron runtime，与 supervisor 共享事件泵。
+  // P14+ Cron runtime, sharing event pump with supervisor.
   readonly cronRuntime?: CronRuntime;
-  // P15+ 队友 runtime，Lead 与每名队友共享 mailbox 传输。
+  // P15+ teammate runtime; Lead and each teammate share mailbox transport.
   readonly teammateRuntime?: TeammateRuntime;
-  // P16 唯一协议编排实例；必须绑定同一个 teammateRuntime 与 MailboxStore。
+  // Sole protocol orchestration instance of P16; must bind to the same teammateRuntime and MailboxStore.
   readonly protocolRuntime?: ProtocolRuntime;
 }
 
@@ -119,14 +119,14 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   if (!profile.capabilities.has("teammate") && dependencies.teammateRuntime !== undefined) {
     throw new Error("teammateRuntime requires chapter 15 or later");
   }
-  // P16 的协议能力必须显式注入 ProtocolRuntime，旧章节也不允许误带协议依赖。
+  // P16 protocol capability requires explicit ProtocolRuntime injection; earlier chapters cannot inadvertently include protocol dependencies.
   if (profile.capabilities.has("protocol") && dependencies.protocolRuntime === undefined) {
     throw new Error("protocolRuntime is required for chapter 16 or later");
   }
   if (!profile.capabilities.has("protocol") && dependencies.protocolRuntime !== undefined) {
     throw new Error("protocolRuntime requires chapter 16 or later");
   }
-  // 协议与队友必须共享同一个 TeammateRuntime 和 MailboxStore，否则请求与投递会写向不同状态。
+  // The protocol and teammates must share the same TeammateRuntime and MailboxStore, or requests and deliveries write to different states.
   if (
     dependencies.protocolRuntime !== undefined &&
     (dependencies.teammateRuntime === undefined ||
@@ -166,7 +166,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     : undefined;
   const basePermissionPolicy = permissionPolicyForProfile(profile, fileSystem, dependencies);
   const permissionPolicy = basePermissionPolicy;
-  // plan gate 只追加到队友权限策略；Lead 仍使用原策略，避免 Lead 的工具被协议状态误拦。
+  // plan gate only appends to teammate permission policies; Lead retains the original policy to avoid blocking Lead tools.
   const teammatePermissionPolicy =
     dependencies.protocolRuntime === undefined || basePermissionPolicy === undefined
       ? basePermissionPolicy
@@ -223,23 +223,23 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     registerTaskTools(tools, dependencies.taskStore);
   }
   if (dependencies.backgroundSupervisor !== undefined) {
-    // 主 Agent 注册后台查询与取消工具；子 Agent 不接收后台 Supervisor，因此不暴露这些能力。
+    // Primary Agent registers background query and cancellation tools; subagents receive no background Supervisor, so do not expose these capabilities.
     registerBackgroundJobTools(tools, dependencies.backgroundSupervisor);
   }
   if (dependencies.cronRuntime !== undefined) {
     tools.register(dependencies.cronRuntime.toolDefinition);
   }
-  // 注册 Lead 协议工具，并让 TeammateRuntime 在启动前绑定 ProtocolRuntime。
+  // Register Lead protocol tools and bind ProtocolRuntime to TeammateRuntime before startup.
   if (dependencies.teammateRuntime !== undefined) {
     tools.register(dependencies.teammateRuntime.spawnToolDefinition);
     tools.register(dependencies.teammateRuntime.sendToolDefinition);
     if (dependencies.protocolRuntime !== undefined) {
-      // Lead 获得 request_shutdown/review_plan；submit_plan 只注册给队友 factory。
+      // Lead receives request_shutdown/review_plan; submit_plan registers only to teammate factory.
       const [requestShutdownTool, reviewPlanTool] =
         dependencies.protocolRuntime.leadToolDefinitions;
       tools.register(requestShutdownTool);
       tools.register(reviewPlanTool);
-      // configureProtocol 校验共享依赖，确保协议消息能路由回同一个 MailboxStore。
+      // configureProtocol validates shared dependencies to ensure protocol messages route back to the same MailboxStore.
       dependencies.teammateRuntime.configureProtocol(dependencies.protocolRuntime);
     }
     const teammateRuntime = dependencies.teammateRuntime;
@@ -247,7 +247,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       const teammateTools = standardTools.tools.subset(["shell", "read_file", "write_file"]);
       teammateTools.register(sendDefinition);
       if (dependencies.protocolRuntime !== undefined) {
-        // 队友只多一个 submit_plan，不能获得 Lead 审批/关机工具。
+        // Teammates only have one extra submit_plan, and cannot obtain Lead approval or shutdown tools.
         teammateTools.register(dependencies.protocolRuntime.submitPlanToolDefinition);
       }
       const teammateCompaction = new CompactionManager({
@@ -303,7 +303,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     : undefined;
   const eventPump =
     dependencies.teammateRuntime ?? dependencies.cronRuntime ?? dependencies.backgroundSupervisor;
-  // 资源按注入顺序的逆序释放：Teammate 先于 Cron，Cron 再先于 JobSupervisor。
+  // Resources are released in reverse injection order: Teammate before Cron, then Cron before JobSupervisor.
   const resources: readonly AsyncResource[] = Object.freeze([
     ...(dependencies.backgroundSupervisor === undefined ? [] : [dependencies.backgroundSupervisor]),
     ...(dependencies.cronRuntime === undefined ? [] : [dependencies.cronRuntime]),
@@ -350,9 +350,9 @@ function createMemorySession(
 }
 
 interface StandardTools {
-  // 按 profile 裁剪后的标准工具注册表快照。
+  // A standard Tool Registry snapshot trimmed by profile.
   readonly tools: ToolRegistry;
-  // P05+ 的 TODO 状态器，缺失表示本章不暴露 TODO 能力。
+  // TODO tracker for P05+; omission indicates this chapter does not expose TODO capability.
   readonly todoTracker?: TodoTracker;
 }
 
@@ -379,7 +379,7 @@ function permissionPolicyForProfile(
   fileSystem: WorkspaceFileSystem,
   dependencies: BuildDependencies,
 ): PermissionPolicy | undefined {
-  // 未启用 policy 的章节仍可注入 approvalProvider，但不会引入规则和 audit 的硬依赖。
+  // Chapters without policy enabled can still inject approvalProvider without hard dependencies on rules and audit.
   if (!profile.capabilities.has("policy")) {
     return dependencies.approvalProvider === undefined
       ? undefined

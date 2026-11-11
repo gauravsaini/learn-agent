@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CLI 入口：解析章节参数、读取 .env、组装终端审批/审计与生命周期 Hook，并执行 Agent。
+// CLI entry: parses chapter arguments, reads .env, assembles terminal approval/audit and lifecycle hooks, and executes the Agent.
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -19,20 +19,20 @@ import type { PermissionRequest } from "./core/permissions.js";
 import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 
-// 终端示例 Hook 只提供可观察性，不改变模型或工具决策。
+// Terminal example Hook only provides observability and does not alter model or tool decisions.
 class TerminalApprovalProvider implements ApprovalProvider {
-  // 在终端收敛 ask 决策；无 TTY、异常或非肯定回答一律 deny。
+  // Resolve ask decisions in the terminal; deny on no TTY, exceptions, or non-affirmative answers.
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
     const definition = request.prepared.definition;
     const proposed = request.proposedDecision;
     if (definition === undefined || proposed === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write(`原因: ${proposed.reason}\n`);
-    stderr.write(`参数: ${JSON.stringify(request.prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write(`Reason: ${proposed.reason}\n`);
+    stderr.write(`Arguments: ${JSON.stringify(request.prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return new PermissionDecision(
         "deny",
         "No interactive approval input was available",
@@ -42,7 +42,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return new PermissionDecision(
@@ -57,7 +57,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 }
 
 class TerminalAuditSink implements AuditSink {
-  // 将最终权限结论写入 stderr，避免混入最终回答 stdout。
+  // Write final permission conclusions to stderr to avoid mixing into final response stdout.
   async record(request: PermissionRequest, decision: PermissionDecision): Promise<void> {
     const definition = request.prepared.definition;
     if (definition === undefined) {
@@ -70,14 +70,14 @@ class TerminalAuditSink implements AuditSink {
 }
 
 interface RunArguments {
-  // 映射为固定 profile 的章节号。
+  // Chapter numbers mapped to fixed profiles.
   readonly chapter: number;
-  // 传给 AgentRunner 的用户任务。
+  // User task passed to AgentRunner.
   readonly prompt: string;
 }
 
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
-  // 固定章节入口复用同一解析器，并由此禁止传入另一个 --chapter。
+  // Fixed chapter entrypoints reuse the same parser, thereby forbidding passing another --chapter.
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
   let prompt: string | undefined;
@@ -110,10 +110,10 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
   return { chapter, prompt };
 }
 
-// 真实启动路径：加载配置、模型、文件边界、审批/审计，并在 P04+ 注入可观察 Hook。
+// Real startup path: load configuration, model, file boundaries, approval/audit, and inject observable Hooks in P04+.
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 从当前目录读取 .env，注入终端审批与审计；只有 P04+ 才注册 Hook。
-  // 当前目录是文件与命令的唯一工作区边界。
+  // Reads .env from current directory, injects terminal approval and audit; registers Hook only for P04+.
+  // The current directory is the sole workspace boundary for files and commands.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
   const settings = existsSync(envPath) ? settingsFromEnvFile(envPath) : settingsFromMapping({});
@@ -132,9 +132,9 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
   return 0;
 }
 
-// 创建仅记录生命周期的默认 Hook；它们不改变权限、参数、结果或停止决定。
+// Creates default Hooks that record lifecycle only; they do not alter permissions, parameters, results, or stop decisions.
 function liveHooks(): HookRegistry {
-  // 默认 Hook 只观察生命周期，不改参数、结果或权限；stdout 留给最终答案。
+  // Default Hook observes only lifecycle without modifying parameters, results, or permissions; stdout is reserved for final answers.
   const hooks = new HookRegistry();
   hooks.register("UserPromptSubmit", () => {
     stderr.write("[Hook] UserPromptSubmit\n");
@@ -159,7 +159,7 @@ function liveHooks(): HookRegistry {
   return hooks;
 }
 
-// 从工具事件上下文提取可显示名称；缺失 prepared 表示 Hook 契约已被破坏。
+// Extracts display name from tool event context; missing prepared indicates the Hook contract is broken.
 function hookToolName(context: HookContext): string {
   const definition = context.prepared?.definition;
   if (definition === undefined) {
@@ -189,11 +189,11 @@ export async function runProfile(
 }
 
 async function runWithErrorHandling(run: () => Promise<number>): Promise<number> {
-  // 进程边界将预期配置错误与运行错误映射为稳定退出码。
+  // The process boundary maps expected configuration errors and runtime errors to stable exit codes.
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;

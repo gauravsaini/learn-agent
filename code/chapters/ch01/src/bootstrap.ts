@@ -6,38 +6,38 @@ import type { ModelClient } from "./core/model.js";
 import type { ChapterProfile } from "./core/profiles.js";
 import { createChapterOneTools } from "./features/builtin-tools.js";
 
-// 组合根（Composition Root）：负责把模型适配器、命令适配器和工具注册表装配为 AgentRunner。
+// Composition Root: responsible for assembling model adapters, command adapters, and Tool Registry into AgentRunner.
 //
-// 核心循环只依赖 ModelClient / CommandRunner / ToolRegistry 等接口，
-// 具体进程与 SDK 的创建集中在这里，测试也能注入替身隔离网络和操作系统。
-// buildAgent 同时以 ChapterProfile 限制能力白名单，防止后续章节能力泄漏进第 1 章。
+// The core loop depends only on interfaces like ModelClient, CommandRunner, and ToolRegistry,
+// Concentrates concrete process and SDK creation here, allowing tests to inject doubles to isolate network and operating system.
+// buildAgent also limits the capability profile with ChapterProfile to prevent subsequent chapter capabilities leaking into Chapter 1.
 //
-// 固定系统提示词属于组装配置；循环在每轮模型请求前注入它。
+// Fixed system prompt is assembly configuration; the loop injects it before each turn model request.
 const SYSTEM_PROMPT =
   "You are a coding agent. Use tools when needed, inspect their results, and answer accurately.";
 
-// 组装层只负责注入章节依赖，核心循环不直接依赖具体进程实现。
+// The assembly layer injects chapter dependencies; the core loop does not depend directly on concrete process implementations.
 export interface BuildDependencies {
-  // 调用方提供模型边界，测试可注入确定性替身以隔离网络。
+  // Callers provide model boundaries; tests can inject deterministic stubs to isolate the network.
   readonly model: ModelClient;
-  // 绝对或相对工作目录最终由 AgentRunner 规范化并传给工具。
+  // AgentRunner ultimately normalizes absolute or relative working directories and passes them to tools.
   readonly workspace: string;
-  // 未注入时才创建真实 PowerShell 适配器，避免测试依赖进程。
+  // Create a real PowerShell adapter only when not injected to prevent tests from depending on processes.
   readonly commandRunner?: CommandRunner;
-  // 可选人工授权边界；未提供时按本章最小循环直接执行工具。
+  // Optional human authorization boundary; execute tools directly using the chapter minimal loop when omitted.
   readonly authorizer?: ToolAuthorizer;
-  // 为循环设置有限回合预算，防止模型持续请求工具。
+  // Sets a finite turn budget for the loop to prevent the model from requesting tools indefinitely.
   readonly maxTurns?: number;
 }
 
-// 组合根：把第 1 章允许的工具、模型和运行上下文装配为单一循环实例。
-// profile 必须属于本章节；dependencies 只承载基础设施而不承载业务流程。
+// Composition root: assembles allowed tools, models, and execution contexts for Chapter 1 into a single loop instance.
+// profile must belong to this chapter; dependencies carries infrastructure only, not business workflows.
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 固定章节入口拒绝更高版本 profile，防止能力从后续章节意外泄漏。
+  // Fixed chapter entrypoints reject higher-version profiles, preventing capabilities from accidentally leaking from subsequent chapters.
   if (profile.chapter !== 1) {
     throw new Error(`Chapter ${profile.chapter} has not been migrated to TypeScript yet`);
   }
-  // 仅在依赖未注入时使用默认适配器，其他依赖原样透传给核心循环。
+  // Uses default adapter only when dependency is not injected; other dependencies pass through as-is to the core loop.
   return new AgentRunner({
     model: dependencies.model,
     tools: createChapterOneTools(

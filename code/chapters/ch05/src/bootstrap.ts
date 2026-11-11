@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook 和 TODO 观察器。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, and TODO observers by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -18,30 +18,30 @@ const SYSTEM_PROMPT =
 const TODO_SYSTEM_PROMPT =
   "\nFor complex tasks, call todo_write with the complete task snapshot and update it when the plan changes.";
 
-// Hook 仅在 P04 及以后组装，避免给早期教学快照注入未讲解的生命周期。
-// P05 将 TodoTracker 同时注册为工具和每轮观察器，避免状态与提示分离。
+// Hooks are assembled only in P04 and later to avoid injecting unexplained lifecycles into early tutorial snapshots.
+// P05 registers TodoTracker as both tool and per-turn observer to prevent decoupling state from prompts.
 export interface BuildDependencies {
-  // 外部边界均可注入，离线测试无需启动真实进程或网络客户端。
+  // All external boundaries are injectable; offline tests do not need to start real processes or network clients.
   readonly model: ModelClient;
-  // workspace 同时传给工具上下文和文件系统边界，是一次运行的根目录。
+  // Pass workspace to both tool context and file system boundaries as the root directory for a run.
   readonly workspace: string;
-  // 未注入时使用真实 PowerShell；测试可替换为可控执行器。
+  // Use real PowerShell when not injected; tests can replace it with a controlled executor.
   readonly commandRunner?: CommandRunner;
-  // 未注入时创建 Node 文件系统适配器，调用方可提供内存实现隔离副作用。
+  // Create a Node file system adapter when not injected; callers can provide in-memory implementations to isolate side effects.
   readonly fileSystem?: WorkspaceFileSystem;
-  // P03 以后处理 ask 决策的外部审批边界。
+  // External approval boundary handling ask decisions from P03 onward.
   readonly approvalProvider?: ApprovalProvider;
-  // P03 以后记录允许、拒绝与失败结果的审计边界。
+  // Audit boundary recording allow, deny, and failure outcomes from P03 onward.
   readonly auditSink?: AuditSink;
-  // P04 以后可注入的生命周期扩展注册表。
+  // Injectable lifecycle extension registry from P04 onward.
   readonly hooks?: HookRegistry;
-  // 覆盖循环上限仅用于调用方控制成本和测试终止条件。
+  // Overriding loop limits is used only for callers to control costs and test termination conditions.
   readonly maxTurns?: number;
 }
 
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 先验证 profile 与章节匹配，再按能力选择工具集与权限策略，最后组装 AgentRunner。
-  // 禁止伪造同章节号但能力不同的 profile，保持教学快照固定。
+  // Validates that profile matches chapter first, selects toolset and permission policy by capability, and finally assembles AgentRunner.
+  // Forbids forging profiles with identical chapter numbers but different capabilities, keeping tutorial snapshots fixed.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -57,7 +57,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       ? createChapterOneTools(commandRunner)
       : createChapterTwoTools(commandRunner, fileSystem);
   const todoTracker = profile.capabilities.has("todo") ? new TodoTracker() : undefined;
-  // 只有具备 todo 能力的 profile 才暴露计划工具和对应系统提示。
+  // Expose planning tools and corresponding system prompts only when the profile has todo capability.
   if (todoTracker !== undefined) {
     tools.register(todoTracker.toolDefinition);
   }
@@ -70,8 +70,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     workspace: dependencies.workspace,
     ...(permissionPolicy === undefined ? {} : { permissionPolicy }),
     ...(dependencies.hooks === undefined ? {} : { hooks: dependencies.hooks }),
-    // 同一个 tracker 实例既是 todo_write 的 handler，也是每轮观察器；
-    // 因此写计划时能重置陈旧计数，遗忘计划时又能注入下一次请求提醒。
+    // The same tracker instance acts as both todo_write handler and per-turn observer;
+    // Therefore writing plans resets stale counters, and forgetting plans injects reminders for subsequent requests.
     ...(todoTracker === undefined ? {} : { toolRoundObserver: todoTracker }),
     ...(dependencies.maxTurns === undefined ? {} : { maxTurns: dependencies.maxTurns }),
   });
@@ -93,7 +93,7 @@ function permissionPolicyForProfile(
   if (dependencies.auditSink === undefined) {
     throw new Error("auditSink is required for chapter 3 or later");
   }
-  // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+  // Promote only write tools; default policy rules handle Shell execution approval.
   return new PermissionPolicy({
     rules: [
       new PermissionRule({

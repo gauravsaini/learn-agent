@@ -1,22 +1,22 @@
 /**
- * 命令执行边界：核心工具不直接依赖 child_process。
- * CommandResult 把输出、退出码、超时和截断统一为可观察状态，
- * 测试可以用确定性 CommandRunner 替换真实 PowerShellRunner。
+ * Command execution boundary: core tools do not directly depend on child_process.
+ * CommandResult unifies output, exit code, timeout, and truncation into an observable state,
+ * Tests can replace the real PowerShellRunner with a deterministic CommandRunner.
  */
-// 命令适配器的标准结果：输出限制和超时均为可观察状态，而非隐式异常。
+// Standard result for command adapters: output limits and timeouts are observable states, not implicit exceptions.
 export interface CommandResult {
-  // 合并 stdout/stderr 的受限输出，供工具回填给模型。
+  // Bounded output merging stdout/stderr, backfilled by tools to the model.
   readonly output: string;
-  // 子进程退出码；非零状态由工具层分类为错误结果。
+  // Subprocess exit code; non-zero states are classified by the tool layer as error results.
   readonly exitCode: number;
-  // 命令是否因时间预算耗尽而被终止。
+  // Whether the command was terminated because its time budget expired.
   readonly timedOut: boolean;
-  // 合并输出是否超过上限，防止模型把部分结果当作完整结果。
+  // Whether merged output exceeds the limit, preventing the model from mistaking partial results for complete results.
   readonly truncated: boolean;
 }
 
-// 核心工具只依赖此边界，可在测试中替换为确定性命令运行器。
+// Core tools depend only on this boundary; tests can replace it with a deterministic command runner.
 export interface CommandRunner {
-  // 可替换的进程执行边界，timeoutMs 仅覆盖本次调用。
+  // Replaceable process execution boundary; timeoutMs applies only to this invocation.
   run(command: string, cwd: string, timeoutMs?: number): Promise<CommandResult>;
 }

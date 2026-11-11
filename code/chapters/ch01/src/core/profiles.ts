@@ -1,83 +1,83 @@
-// Profile 是章节能力白名单，防止固定章节脚本继承尚未教学的能力。
-// Capability 枚举定义了本章节暴露给组合根的能力种类：
-//   - "loop": Agent 核心循环（AgentRunner），所有章节都包含
-//   - "powershell": PowerShell 命令执行工具（仅第 1 章）
-// 后续章节会扩展此联合类型以加入文件操作、搜索等新能力。
+// Profile is a chapter capability allowlist, preventing fixed chapter scripts from inheriting untaught capabilities.
+// Capability enum defines the capability types this chapter exposes to the composition root:
+//   - "loop": Agent core loop (AgentRunner), included in all chapters
+//   - "powershell": PowerShell command execution tool (Chapter 1 only)
+// Subsequent chapters expand this union type to add new capabilities like file operations and search.
 export type Capability = "loop" | "powershell";
 
-// 固定章节的能力边界；组合根只能根据该白名单装配对应阶段已教学的组件。
+// Capability boundary of fixed chapters; composition root can assemble only components taught up to that stage based on this allowlist.
 export interface ChapterProfile {
-  // 固定章节号与不可变能力集合共同限制组合根可装配的能力。
-  // 组合根 (bootstrap.ts) 根据 profile 决定注入哪些组件。
+  // Fixed chapter numbers and immutable capability sets jointly restrict capabilities assembled by the composition root.
+  // The composition root (bootstrap.ts) determines which components to inject based on the profile.
   readonly chapter: number;
   readonly capabilities: ReadonlySet<Capability>;
 }
 
-// 对只读能力集合的最小实现，隐藏可变 Set 以保持 profile 在导出后不可修改。
+// Minimal implementation for read-only capability sets, hiding mutable Sets to keep profiles immutable after export.
 class CapabilitySet implements ReadonlySet<Capability> {
-  // 用私有 Set 实现只读接口，避免调用方通过 profile 修改能力集合。
-  // CapabilitySet 确保外部代码无法 add/delete，profile 一旦定义就不可变。
+  // Implement a read-only interface with a private Set to prevent callers from modifying capability sets via profiles.
+  // CapabilitySet ensures external code cannot add/delete; a profile is immutable once defined.
   readonly #values: Set<Capability>;
 
-  // 从字面量能力列表创建私有副本，调用方随后修改原数组不会影响 profile。
+  // Creates private copy from literal capability list; subsequent modifications to original array by callers do not affect the profile.
   constructor(values: readonly Capability[]) {
     this.#values = new Set(values);
   }
 
-  // 暴露能力数量，同时不泄露底层可变集合。
+  // Expose capability count without leaking the underlying mutable collection.
   get size(): number {
     return this.#values.size;
   }
 
-  // 判断特定能力是否在当前章节白名单内。
+  // Determine whether a specific capability is in the current chapter allowlist.
   has(value: Capability): boolean {
     return this.#values.has(value);
   }
 
-  // 按原生 Set 约定返回键值对迭代器，兼容 ReadonlySet 消费方。
+  // Return a key-value pair iterator following native Set conventions to maintain ReadonlySet compatibility.
   entries(): SetIterator<[Capability, Capability]> {
     return this.#values.entries();
   }
 
-  // 返回能力名称迭代器。
+  // Returns an iterator of capability names.
   keys(): SetIterator<Capability> {
     return this.#values.keys();
   }
 
-  // 返回能力值迭代器；Set 的键和值相同，但该方法满足 ReadonlySet 契约。
+  // Returns an iterator of capability values; keys and values of Set are identical, but this method satisfies the ReadonlySet contract.
   values(): SetIterator<Capability> {
     return this.#values.values();
   }
 
-  // 以原生 Set 的回调签名遍历能力，第二个 value 参数保持协议兼容。
+  // Iterates capabilities with native Set callback signature; second value parameter maintains protocol compatibility.
   forEach(
     callbackfn: (value: Capability, value2: Capability, set: ReadonlySet<Capability>) => void,
     thisArg?: unknown,
   ): void {
-    // 按 Set 的标准回调签名传入两次 value，保持 ReadonlySet 行为兼容。
-    // forEach 的第二个参数 value2 和第一个相同，与原生 Set.forEach 签名一致。
+    // Pass value twice following the standard Set callback signature to maintain ReadonlySet compatibility.
+    // The second argument value2 of forEach matches the first, aligning with native Set.forEach signatures.
     this.#values.forEach((value) => {
       callbackfn.call(thisArg, value, value, this);
     });
   }
 
-  // 让能力集合可用于 for...of 和展开语法，不提供任何写入入口。
+  // Make capability sets iterable via for...of and spread syntax without providing any write entries.
   [Symbol.iterator](): SetIterator<Capability> {
     return this.values();
   }
 }
 
-// 第 1 章冻结 profile；只开放最小 Agent Loop 与 PowerShell 执行能力。
+// Chapter 1 frozen profile; opens only minimal Agent Loop and PowerShell execution capability.
 export const P01: ChapterProfile = Object.freeze({
   chapter: 1,
-  // "loop" + "powershell"：第 1 章只有核心循环和 PowerShell 工具。
+  // "loop" + "powershell": Chapter 1 has only the core loop and PowerShell tool.
   capabilities: new CapabilitySet(["loop", "powershell"]),
 });
 
-// 将通用 CLI 的章节号解析为本快照实际存在的 profile，拒绝未迁移章节。
+// Resolve generic CLI chapter numbers to profiles actually present in this snapshot; reject unmigrated chapters.
 export function profileForChapter(chapter: number): ChapterProfile {
-  // 通用入口只能解析本快照实际提供的章节，拒绝尚未迁移的请求。
-  // 当通用 CLI 请求未迁移章节时给出明确错误，避免运行时静默失败。
+  // The general entry point can parse only chapters actually provided in this snapshot, rejecting unmigrated requests.
+  // Provide explicit errors when generic CLI requests unmigrated chapters to avoid silent runtime failures.
   if (chapter !== 1) {
     throw new Error(`Chapter ${chapter} has not been migrated to TypeScript yet`);
   }

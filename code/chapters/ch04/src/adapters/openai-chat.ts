@@ -1,5 +1,5 @@
-// OpenAI SDK 仅存在于此 adapter，core 不依赖供应商类型。
-// OpenAI Adapter：将 core ModelClient 接口映射到 OpenAI SDK，做响应归一化和错误检查。
+// OpenAI SDK exists only in this adapter; core does not depend on vendor types.
+// OpenAI Adapter: maps core ModelClient interface to OpenAI SDK, performing response normalization and error checks.
 import OpenAI from "openai";
 import type {
   ChatCompletionAssistantMessageParam,
@@ -19,7 +19,7 @@ import type {
 } from "../core/model.js";
 import type { OpenAISettings } from "../config.js";
 
-// 供应商响应违反内部模型契约时使用的边界错误。
+// Boundary error used when vendor responses violate the internal model contract.
 export class OpenAIResponseError extends Error {
   override readonly name = "OpenAIResponseError";
 }
@@ -42,18 +42,18 @@ export class OpenAIChatModel implements ModelClient {
         ? new OpenAI({
             apiKey: settings.apiKey,
             baseURL: settings.baseUrl,
-            // 重试由第 11 章的供应商无关恢复层统一控制，SDK 不得隐藏额外请求。
+            // Retries are controlled uniformly by the provider-agnostic recovery layer from Chapter 11; the SDK must not hide additional requests.
             maxRetries: 0,
           })
         : client;
-    // 固定模型名；后续章节可通过 ModelRequest.model 临时替换。
+    // Fixed model name; subsequent chapters can override temporarily via ModelRequest.model.
     this.#model = settings.model;
   }
 
   async complete(request: ModelRequest): Promise<ModelReply> {
-    // 发请求前验证历史配对，避免把无效会话发送给供应商。
+    // Validate history pairing before sending requests to avoid sending invalid sessions to providers.
     validateToolPairing(request.messages);
-    // maxTokens 检查防止零或负值导致供应商 API 报错而非修复调用方错误。
+    // maxTokens check prevents zero or negative values causing provider API errors instead of fixing caller mistakes.
     if (
       request.maxTokens !== undefined &&
       (!Number.isInteger(request.maxTokens) || request.maxTokens <= 0)
@@ -84,7 +84,7 @@ interface NormalizedResponse {
 }
 
 function normalizeResponse(response: unknown): NormalizedResponse {
-  // OpenAI SDK 边界返回 unknown；逐层缩窄后再进入受信任的 core 类型。
+  // OpenAI SDK boundary returns unknown; narrow layer by layer before entering trusted core types.
   if (typeof response !== "object" || response === null) {
     throw new OpenAIResponseError("Chat completion response must be an object");
   }
@@ -159,7 +159,7 @@ function normalizeToolCall(call: unknown): ReturnType<typeof toolCall> {
 }
 
 function isFinishReason(value: unknown): value is FinishReason {
-  // 显式列出所有已知 finish_reason，未知值按不可恢复错误拒绝。
+  // Explicitly list all known finish_reason values; reject unknown values as unrecoverable errors.
   return (
     value === "stop" ||
     value === "length" ||
@@ -170,7 +170,7 @@ function isFinishReason(value: unknown): value is FinishReason {
 }
 
 function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
-  // 内部消息模型与 OpenAI 结构的转换集中在 adapter，core 不依赖 SDK 类型。
+  // Conversion between internal message model and OpenAI structures is centralized in adapter; core does not depend on SDK types.
   switch (message.role) {
     case "system":
     case "user":
@@ -206,11 +206,11 @@ function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
 }
 
 function normalizeUsage(usage: unknown): TokenUsage {
-  // 用量字段用于观测，仍按严格整数契约拒绝不完整响应。
+  // Usage fields are used for observability and still reject incomplete responses following a strict integer contract.
   if (typeof usage !== "object" || usage === null) {
     throw new OpenAIResponseError("Chat completion usage must be an object");
   }
-  // 字段类型和值范围都由 adapter 收敛，core 不做运行时负值检查。
+  // Field types and value ranges are converged by adapters; core does not perform runtime negative value checks.
   const promptTokens = readUsageCount(usage, "prompt_tokens");
   const completionTokens = readUsageCount(usage, "completion_tokens");
   const totalTokens = readUsageCount(usage, "total_tokens");

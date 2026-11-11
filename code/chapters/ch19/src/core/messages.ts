@@ -1,15 +1,15 @@
-// 消息类型是 core 与模型 adapter 之间唯一的会话结构，构造函数负责冻结和字段校验。
-// 与 Chat Completions 对齐的最小会话消息模型。
-// validateToolPairing 强制保证每个 tool_call 有对应 tool 消息。
-// 会话消息模型：匹配 OpenAI Chat Completions 的最小角色与字段集。
-// validateToolPairing 强制保证每个 tool_call 有对应 tool 消息，维护供应商配对契约。
+// The message type is the only conversation structure between core and model adapters; the constructor handles freezing and field validation.
+// Minimal conversation message model aligned with Chat Completions.
+// validateToolPairing strictly ensures each tool_call has a corresponding tool message.
+// Conversation message model: matches minimal roles and field set of OpenAI Chat Completions.
+// validateToolPairing strictly ensures each tool_call has a corresponding tool message, preserving provider pairing contracts.
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export class MessageContractError extends Error {
   override readonly name = "MessageContractError";
 }
 
-// 参数保留 JSON 字符串，具体解析和 schema 校验属于工具注册表。
+// Arguments remain JSON strings; concrete parsing and schema validation belong to the Tool Registry.
 export interface ToolCall {
   readonly id: string;
   readonly name: string;
@@ -26,7 +26,7 @@ export interface UserMessage {
   readonly content: string;
 }
 
-// 同一 assistant 消息中的调用 ID 是后续工具结果配对的唯一键。
+// Call IDs in the same assistant message are unique keys for subsequent tool result pairing.
 export interface AssistantMessage {
   readonly role: "assistant";
   readonly content: string | null;
@@ -81,7 +81,7 @@ function requireString(value: unknown, field: string, allowEmpty = false): strin
 }
 
 export function toolCall(id: unknown, name: unknown, argumentsJson: unknown): ToolCall {
-  // 参数保留 JSON 字符串，具体解析和 schema 校验属于工具注册表。
+  // Arguments remain JSON strings; concrete parsing and schema validation belong to the Tool Registry.
   return Object.freeze({
     id: requireString(id, "tool call id"),
     name: requireString(name, "tool call name"),
@@ -104,7 +104,7 @@ export function assistantMessage(
   if (content !== null) {
     requireString(content, "assistant content", true);
   }
-  // 同一 assistant 消息中的调用 ID 是后续工具结果配对的唯一键。
+  // Call IDs in the same assistant message are unique keys for subsequent tool result pairing.
   const ids = toolCalls.map((call) => call.id);
   if (new Set(ids).size !== ids.length) {
     throw new MessageContractError("assistant tool call ids must be unique");
@@ -120,14 +120,14 @@ export function toolMessage(content: string, toolCallId: string): ToolMessage {
   });
 }
 
-// assistant 工具调用后必须紧随对应数量的 tool 消息，保证供应商协议历史有效。
+// The exact number of tool messages must follow assistant tool calls to keep provider protocol history valid.
 export function validateToolPairing(messages: readonly ChatMessage[]): void {
-  // 每个 assistant 工具调用之后必须紧跟对应 tool result，否则协议在供应商侧会直接失败。
-  // assistant 工具调用后必须紧随对应数量的 tool 消息，保证供应商协议历史有效。
+  // Each assistant tool call must be immediately followed by a matching tool result; otherwise the provider protocol fails directly.
+  // The exact number of tool messages must follow assistant tool calls to keep provider protocol history valid.
   const pending = new Set<string>();
 
-  // pending 集合表达“当前 assistant 工具调用块尚未回填完成”：
-  // 下一批消息必须是 tool，且只能消费 pending 中的 ID；不能出现孤儿或缺失。
+  // The pending set represents "current assistant tool call block has not finished backfilling":
+  // The next batch of messages must be tool messages and consume only IDs in pending; no orphaned or missing messages are allowed.
   for (const message of messages) {
     if (pending.size > 0) {
       if (message.role !== "tool") {

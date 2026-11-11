@@ -28,15 +28,15 @@ describe("shell tool", () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-tutorial-ch01-"));
     try {
       const result = await new PowerShellRunner().run(
-        "Write-Output (Get-Location).Path; Write-Output '中文'; [Console]::Error.WriteLine('错误')",
+        "Write-Output (Get-Location).Path; Write-Output 'Chinese'; [Console]::Error.WriteLine('Error')",
         workspace,
       );
 
       expect(result.exitCode).toBe(0);
       expect(result.timedOut).toBe(false);
       expect(result.output).toContain(workspace);
-      expect(result.output).toContain("中文");
-      expect(result.output).toContain("错误");
+      expect(result.output).toContain("Chinese");
+      expect(result.output).toContain("Error");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

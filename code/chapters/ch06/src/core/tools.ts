@@ -1,11 +1,11 @@
-// 工具注册表：集中保存 schema/effect/handler，解析并冻结调用参数后交给策略与 handler。
+// Tool Registry: stores schema/effect/handler centrally, parses and freezes invocation arguments before passing to policies and handlers.
 import { z } from "zod";
 
 import type { ToolCall } from "./messages.js";
 import { toolCall } from "./messages.js";
 import type { OpenAIToolSchema } from "./model.js";
 
-// effect 是权限策略判断副作用的语义标签，而不是执行方式。
+// effect is a semantic tag for permission policies to judge side effects, not an execution method.
 export type EffectClass = "read" | "write" | "execute" | "external";
 
 export interface ToolContext {
@@ -73,7 +73,7 @@ export interface PreparedToolCall {
 }
 
 export function freezePreparedToolCall(
-  // 使用 structuredClone 复制参数并递归冻结，防止 approval 与 handler 接触外部变异。
+  // Clones parameters via structuredClone and freezes recursively to prevent approval and handler from touching external mutations.
   call: ToolCall,
   definition: StoredToolDefinition,
   argumentsValue: unknown,
@@ -86,7 +86,7 @@ export function freezePreparedToolCall(
 }
 
 export class ToolRegistry {
-  // 工具注册表按名称索引所有定义，prepare 做 JSON 解析与 Zod 校验。
+  // The Tool Registry indexes all definitions by name; prepare performs JSON parsing and Zod validation.
   readonly #definitions: Map<string, StoredToolDefinition>;
   readonly #mutable: boolean;
 
@@ -118,7 +118,7 @@ export class ToolRegistry {
       description: definition.description,
       inputSchema: definition.inputSchema,
       effect: definition.effect,
-      // 再次解析确保即使调用方绕过 prepare，也不会把未校验输入传给 handler。
+      // Re-parsing ensures that unvalidated input is not passed to handler even if callers bypass prepare.
       invoke: async (input: unknown, context: ToolContext) =>
         definition.handler(definition.inputSchema.parse(input), context),
     });
@@ -126,7 +126,7 @@ export class ToolRegistry {
   }
 
   snapshot(): ToolRegistry {
-    // 每轮使用不可变快照，避免模型请求与执行之间的注册表被篡改。
+    // Use immutable snapshots each turn to prevent registry tampering between model request and execution.
     return new ToolRegistry(this.#definitions, false);
   }
 
@@ -143,10 +143,10 @@ export class ToolRegistry {
     );
   }
 
-  // JSON 解析和 Zod 校验先于权限策略；错误直接返回结构化工具错误。
+  // JSON parsing and Zod validation precede permission policy; errors return structured tool errors directly.
   prepare(call: ToolCall): PreparedToolCall {
-    // 解析与 schema 校验先于权限策略；策略永远面对可信的工具定义和参数。
-    // JSON 解析与 Zod 校验先于权限策略；错误直接返回结构化工具错误，策略始终面对可信定义和参数。
+    // Parsing and schema validation precede permission policies; policies always face trusted tool definitions and arguments.
+    // JSON parsing and Zod validation precede permission policy; errors return structured tool errors directly so policy always sees trusted definitions and arguments.
     const definition = this.#definitions.get(call.name);
     if (definition === undefined) {
       return { call, error: toolError("unknown_tool", `Unknown tool: ${call.name}`) };
@@ -156,7 +156,7 @@ export class ToolRegistry {
     try {
       raw = JSON.parse(call.arguments);
     } catch {
-      // 工具故障转成可回填消息，循环可继续让模型决定下一步。
+      // Convert tool faults into backfillable messages, allowing the loop to continue and let the model decide the next step.
       return {
         call,
         definition,
@@ -179,7 +179,7 @@ export class ToolRegistry {
         error: toolError("invalid_arguments", "Tool arguments failed schema validation"),
       };
     }
-    // Pre Hook 只能通过 updatedInput 显式改写，不能就地修改受信任的准备结果。
+    // Pre Hook can only rewrite explicitly via updatedInput; it cannot mutate trusted prepared results in place.
     return freezePreparedToolCall(call, definition, parsed.data);
   }
 
@@ -217,7 +217,7 @@ function freezeInput<Input>(value: Input, seen: WeakSet<object> = new WeakSet())
 }
 
 export function isToolResult(value: unknown): value is ToolResult {
-  // handler 返回值同样属于不可信边界，阻止畸形对象污染会话历史。
+  // handler return values also belong to untrusted boundaries, preventing malformed objects polluting session history.
   if (typeof value !== "object" || value === null) {
     return false;
   }

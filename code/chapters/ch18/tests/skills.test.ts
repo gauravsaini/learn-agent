@@ -163,8 +163,8 @@ describe("workspace skills", () => {
   });
 
   test("load_skill returns only a registered body after explicit tool invocation", async () => {
-    const body = "# SQL Style\n\n只使用参数化查询。\n";
-    await writeSkill(workspace, "sql-style", { description: "SQL 编写规范", body });
+    const body = "# SQL Style\n\nUse parameterized queries only.\n";
+    await writeSkill(workspace, "sql-style", { description: "SQL authoring specification", body });
     const skills = SkillRegistry.scan(workspace);
     const tools = new ToolRegistry();
     tools.register(skills.toolDefinition);
@@ -178,7 +178,7 @@ describe("workspace skills", () => {
       { workspace, identity: "tester" },
     );
 
-    expect(skills.renderCatalog()).toBe("- **sql-style**: SQL 编写规范");
+    expect(skills.renderCatalog()).toBe("- **sql-style**: SQL authoring specification");
     expect(skills.renderCatalog()).not.toContain(body);
     await expect(skills.loadSkill("sql-style")).resolves.toBe(body);
     expect(result).toEqual({ content: body, isError: false });

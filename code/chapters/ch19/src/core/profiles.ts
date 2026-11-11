@@ -1,4 +1,4 @@
-// 章节能力清单：每个 profile 都是冻结单例，组合根据此决定启用的运行时边界。
+// Chapter capability list: each profile is a frozen singleton; the composition root determines enabled runtime boundaries from it.
 export type Capability =
   | "loop"
   | "powershell"
@@ -19,14 +19,14 @@ export type Capability =
   | "cron"
   | "teammate"
   | "mailbox"
-  // protocol 与 plan_gate 共同表示结构化审批消息和副作用执行门控。
+  // protocol and plan_gate together represent structured approval messages and side-effect execution gating.
   | "protocol"
   | "plan_gate"
-  // task_dag_sqlite 与 work_stealing 表示带租约的 SQLite 任务图与去中心化认领。
+  // task_dag_sqlite and work_stealing indicate leased SQLite task graphs and decentralized claims.
   | "task_dag_sqlite"
   | "work_stealing"
   | "worktree"
-  // mcp 表示可动态发布和撤销的远程 MCP 工具边界。
+  // mcp indicates remote MCP tool boundaries that can be dynamically published and revoked.
   | "mcp";
 
 export interface ChapterProfile {
@@ -243,19 +243,19 @@ export const P16: ChapterProfile = Object.freeze({
   capabilities: new CapabilitySet([...P15.capabilities, "protocol", "plan_gate"]),
 });
 
-// P17 在 P16 基础上追加 SQLite 任务图与 work stealing，让 Lead、子代理和队友共享同一认领路径。
+// P17 appends SQLite task graph and work stealing to P16, letting Lead, subagents, and teammates share the same claim path.
 export const P17: ChapterProfile = Object.freeze({
   chapter: 17,
   capabilities: new CapabilitySet([...P16.capabilities, "task_dag_sqlite", "work_stealing"]),
 });
 
-// P18 在 SQLite 工作窃取之上加入受控 Git worktree 隔离。
+// P18 adds controlled Git worktree isolation on top of SQLite work stealing.
 export const P18: ChapterProfile = Object.freeze({
   chapter: 18,
   capabilities: new CapabilitySet([...P17.capabilities, "worktree"]),
 });
 
-// P19 在 worktree 隔离之上增加可连接、可发现且可关闭的 MCP 工具边界。
+// P19 adds connectable, discoverable, and closeable MCP tool boundaries on top of worktree isolation.
 export const P19: ChapterProfile = Object.freeze({
   chapter: 19,
   capabilities: new CapabilitySet([...P18.capabilities, "mcp"]),

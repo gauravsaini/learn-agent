@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook、TODO 观察器和 Skill 目录。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, TODO observers, and Skill catalogs by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -25,12 +25,12 @@ const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// Hook 仅在 P04 及以后组装，避免给早期教学快照注入未讲解的生命周期。
-// P05 将 TodoTracker 同时注册为工具和每轮观察器，避免状态与提示分离。
-// P07 将目录摘要注入系统提示，但完整指令只由显式工具调用提供。
-// P08 为 Loop 注入请求历史与工具结果处理器，压缩只作用于下一次模型请求。
+// Hooks are assembled only in P04 and later to avoid injecting unexplained lifecycles into early tutorial snapshots.
+// P05 registers TodoTracker as both tool and per-turn observer to prevent decoupling state from prompts.
+// P07 injects catalog summaries into system prompt, but explicit tool calls provide full instructions.
+// P08 injects request history and tool result handlers for the Loop; compaction only affects the next model request.
 export interface BuildDependencies {
-  // 外部边界均可注入，离线测试无需启动真实进程或网络客户端。
+  // All external boundaries are injectable; offline tests do not need to start real processes or network clients.
   readonly model: ModelClient;
   readonly workspace: string;
   readonly commandRunner?: CommandRunner;
@@ -42,7 +42,7 @@ export interface BuildDependencies {
 }
 
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 禁止伪造同章节号但能力不同的 profile，保持教学快照固定。
+  // Forbids forging profiles with identical chapter numbers but different capabilities, keeping tutorial snapshots fixed.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -56,14 +56,14 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   const standardTools = createStandardTools(profile, commandRunner, fileSystem);
   const tools = standardTools.tools;
   const todoTracker = standardTools.todoTracker;
-  // 章节组装阶段扫描一次；运行时 load_skill 仍会复查真实路径。
+  // Scan once during chapter assembly; runtime load_skill still re-checks real paths.
   const skillRegistry = profile.capabilities.has("skills")
     ? SkillRegistry.scan(dependencies.workspace)
     : undefined;
   const permissionPolicy = permissionPolicyForProfile(profile, fileSystem, dependencies);
-  // 同一压缩管理器同时服务请求历史和工具结果两条边界。
+  // The same compaction manager serves both request history and tool result boundaries.
   const compactionManager = profile.capabilities.has("compaction")
-    ? // 摘要模型沿用主模型边界，离线测试可注入确定性模型。
+    ? // Summary model follows the main model boundary; offline tests can inject deterministic models.
       new CompactionManager({
         workspace: dependencies.workspace,
         summarizer: new ModelHistorySummarizer(dependencies.model),
@@ -80,7 +80,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     const subagent = new SubagentTool({
       modelFactory: () => dependencies.model,
       toolsFactory: () => {
-        // 子代理共享 Skill 元数据快照，但每次创建独立工具注册表，避免跨任务状态泄漏。
+        // Subagents share Skill metadata snapshots, but create an independent Tool Registry each time to prevent state leaks across tasks.
         const childTools = createStandardTools(profile, commandRunner, fileSystem).tools;
         if (skillRegistry !== undefined) {
           childTools.register(skillRegistry.toolDefinition);
@@ -93,13 +93,13 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     tools.register(subagent.toolDefinition);
   }
   if (skillRegistry !== undefined) {
-    // load_skill 注册在 task 之后，使父工具顺序稳定且子工具仍可复用同一注册表。
+    // load_skill is registered after task to keep parent tool order stable while child tools reuse the same registry.
     tools.register(skillRegistry.toolDefinition);
   }
   let systemPrompt =
     todoTracker === undefined ? SYSTEM_PROMPT : `${SYSTEM_PROMPT}${TODO_SYSTEM_PROMPT}`;
   if (skillRegistry !== undefined) {
-    // 目录摘要作为构建期快照进入 System Prompt；正文仍由 load_skill 按需加载。
+    // The catalog summary enters the System Prompt as a build-time snapshot; load_skill still loads bodies on demand.
     const catalog = skillRegistry.renderCatalog();
     systemPrompt = `${systemPrompt}${SKILLS_SYSTEM_PROMPT}${catalog.length === 0 ? EMPTY_SKILLS_CATALOG : catalog}`;
   }
@@ -111,12 +111,12 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     ...(permissionPolicy === undefined ? {} : { permissionPolicy }),
     ...(hooks === undefined ? {} : { hooks }),
     ...(todoTracker === undefined ? {} : { toolRoundObserver: todoTracker }),
-    // 请求历史在模型调用前准备；工具结果在写入 canonical history 前落盘。
+    // Request history is prepared before model calls; tool results are flushed to disk before writing to canonical history.
     ...(compactionManager === undefined
       ? {}
       : {
           historyProcessor: compactionManager,
-          // Loop 只消费压缩后的结果数组；artifact 引用由 CompactionManager 在批内管理。
+          // Loop consumes only compacted result arrays; CompactionManager manages artifact references within the batch.
           toolResultProcessor: async (results) =>
             (await compactionManager.compactToolResults(results)).results,
         }),
@@ -129,8 +129,8 @@ interface StandardTools {
   readonly todoTracker?: TodoTracker;
 }
 
-// createStandardTools 封装章节通用工具注册：先创建 shell 与文件工具集，
-// 再按 profile 能力决定是否追加 todo 工具和对应观察器，返回不可变组合。
+// createStandardTools encapsulates chapter tool registration: create shell and file tools first,
+// Determines whether to append TODO tools and corresponding observers by profile capabilities next, returning immutable composition.
 function createStandardTools(
   profile: ChapterProfile,
   commandRunner: CommandRunner,
@@ -148,8 +148,8 @@ function createStandardTools(
   return Object.freeze({ tools, todoTracker });
 }
 
-// permissionPolicyForProfile 根据 profile 的 policy 能力组合权限策略；
-// 子代理复用同一套策略，因此委派不能绕过父 Agent 的审批与审计边界。
+// permissionPolicyForProfile composes permission policies based on profile policy capabilities;
+// Subagents reuse the same policies, so delegation cannot bypass the parent Agent's approval and audit boundaries.
 function permissionPolicyForProfile(
   profile: ChapterProfile,
   fileSystem: WorkspaceFileSystem,
@@ -166,7 +166,7 @@ function permissionPolicyForProfile(
   if (dependencies.auditSink === undefined) {
     throw new Error("auditSink is required for chapter 3 or later");
   }
-  // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+  // Promote only write tools; default policy rules handle Shell execution approval.
   return new PermissionPolicy({
     rules: [
       new PermissionRule({

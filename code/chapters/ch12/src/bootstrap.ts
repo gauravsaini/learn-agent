@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook、TODO 观察器、Skill 目录和持久任务存储。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, TODO observers, Skill catalogs, and persistent task stores by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -23,22 +23,22 @@ import { registerTaskTools } from "./features/tasks.js";
 import type { TaskStore } from "./features/tasks.js";
 import { TodoTracker } from "./features/todos.js";
 
-// 固定身份与行为基线；动态渲染时作为 identity section 的起点，非动态时仍为完整 system prompt。
+// Fixed identity and behavioral baseline; serves as the starting point of the identity section in dynamic rendering, and remains the complete system prompt in non-dynamic mode.
 export const BASE_SYSTEM_PROMPT =
   "You are a coding agent. Use tools when needed, inspect their results, and answer accurately.";
-// 复杂任务的 TODO 跟踪指令，在动态和非动态模式下都适用。
+// TODO tracking instructions for complex tasks; applicable in both dynamic and non-dynamic modes.
 const TODO_SYSTEM_PROMPT =
   "\nFor complex tasks, call todo_write with the complete task snapshot and update it when the plan changes.";
-// Skill 目录插入提示，只在非动态模式下使用；动态模式下由 DynamicPromptRenderer 处理。
+// Skill catalog insertion prompt, used only in non-dynamic mode; handled by DynamicPromptRenderer in dynamic mode.
 const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// P10 改用动态 Provider 统一组装身份、工具、工作区、Skill 和记忆上下文；
-// P11 让 RecoveryManager 成为唯一模型请求执行边界，SDK 与循环均不自行重试。
-// P12 要求注入 TaskStore；任务工具与子代理共享同一任务图而非各自副本。
+// P10 uses dynamic Provider to assemble identity, tools, workspace, Skill, and memory contexts uniformly;
+// P11 makes RecoveryManager the sole execution boundary for model requests; neither SDK nor loop retries independently.
+// P12 requires injecting TaskStore; task tools and subagents share the same task graph rather than separate copies.
 export interface BuildDependencies {
-  // 外部边界均可注入，离线测试无需启动真实进程或网络客户端。
+  // All external boundaries are injectable; offline tests do not need to start real processes or network clients.
   readonly model: ModelClient;
   readonly workspace: string;
   readonly commandRunner?: CommandRunner;
@@ -47,32 +47,32 @@ export interface BuildDependencies {
   readonly auditSink?: AuditSink;
   readonly hooks?: HookRegistry;
   readonly maxTurns?: number;
-  // identity 只用作动态 Prompt context 字段；缺省时回退为 "user"。
+  // identity is only used as a dynamic Prompt context field; defaults to "user" when omitted.
   readonly identity?: string;
-  // recoveryConfig 只在 P11+ 能力位上出现，由 CLI 或测试显式构造。
+  // recoveryConfig only appears on P11+ capability flags, constructed explicitly by CLI or tests.
   readonly recoveryConfig?: RecoveryConfig;
-  // taskStore 只在 P12+ 能力位上出现，与任务工具和子 Agent 共享同一持久化图。
+  // taskStore appears only on P12+ capability flags, sharing the same persistence graph with task tools and subagents.
   readonly taskStore?: TaskStore;
 }
 
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
   if (profileForChapter(profile.chapter) !== profile) {
-    // 运行时校验 profile 引用相等性，防止调用方传入损坏或动态构造的 profile。
+    // The runtime validates profile reference equality to prevent callers from passing corrupted or dynamically constructed profiles.
     throw new Error("profile must be a fixed chapter profile");
   }
   if (dependencies.hooks !== undefined && !profile.capabilities.has("hooks")) {
-    // hooks 能力在 P04 之前不可用，调用方传入 hooks 时须同时打开 hooks 能力位。
+    // hooks capability is unavailable before P04; callers passing hooks must also enable the hooks capability flag.
     throw new Error("hooks require chapter 4 or later");
   }
   if (dependencies.recoveryConfig !== undefined && !profile.capabilities.has("recovery")) {
     throw new Error("recoveryConfig requires chapter 11 or later");
   }
   if (profile.capabilities.has("recovery") && dependencies.recoveryConfig === undefined) {
-    // recovery 能力与配置必须成对出现，避免 P11 静默退化成 raw ModelClient。
+    // recovery capabilities and configurations must appear in pairs to prevent P11 silently degrading to raw ModelClient.
     throw new Error("recoveryConfig is required for chapter 11 or later");
   }
   if (profile.capabilities.has("task_dag_json") && dependencies.taskStore === undefined) {
-    // DAG 能力不能静默降级为内存任务，缺少持久化边界时直接拒绝组装。
+    // DAG capability must not silently degrade to in-memory tasks; rejects assembly directly when persistent boundary is missing.
     throw new Error("taskStore is required for chapter 12 or later");
   }
   if (!profile.capabilities.has("task_dag_json") && dependencies.taskStore !== undefined) {
@@ -85,17 +85,17 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   const standardTools = createStandardTools(profile, commandRunner, fileSystem);
   const tools = standardTools.tools;
   const todoTracker = standardTools.todoTracker;
-  // identity 缺省 fallback 与 AgentRunner 构造器一致，保证 context 字段始终非空。
+  // identity fallback matches AgentRunner constructor defaults, ensuring the context field is never empty.
   const identity = dependencies.identity === undefined ? "user" : dependencies.identity;
-  // dynamic_prompt 开启时由 DynamicPromptProvider 每轮重新渲染系统提示，关闭时回退静态字符串。
+  // When dynamic_prompt is enabled, DynamicPromptProvider re-renders system prompts each turn; when disabled, fall back to static strings.
   const dynamicPrompt = profile.capabilities.has("dynamic_prompt");
-  // 章节组装阶段扫描一次；运行时 load_skill 仍会复查真实路径。
+  // Scan once during chapter assembly; runtime load_skill still re-checks real paths.
   const skillRegistry = profile.capabilities.has("skills")
     ? SkillRegistry.scan(dependencies.workspace)
     : undefined;
-  // 权限策略由 profile 能力位决定；子代理复用同一策略，不能绕过父审批。
+  // Permission policy is decided by profile capabilities; subagents reuse the same policy and cannot bypass parent approval.
   const permissionPolicy = permissionPolicyForProfile(profile, fileSystem, dependencies);
-  // 同一压缩管理器同时服务请求历史和工具结果两条边界。
+  // The same compaction manager serves both request history and tool result boundaries.
   const compactionManager = profile.capabilities.has("compaction")
     ? new CompactionManager({
         workspace: dependencies.workspace,
@@ -103,19 +103,19 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       })
     : undefined;
   let modelRequestExecutor: RecoveryManager | undefined;
-  // 响应式压缩复用同一个 CompactionManager，保证协议组拆分规则与主动压缩一致。
+  // Reactive compaction reuses the same CompactionManager, ensuring protocol group splitting rules match proactive compaction.
   if (dependencies.recoveryConfig !== undefined) {
     if (compactionManager === undefined) {
       throw new Error("recovery capability requires compaction");
     }
-    // 恢复依赖同一压缩管理器，prompt-too-long 时才能保持协议组完整地缩减历史。
+    // Recovery depends on the same compaction manager to reduce history while keeping protocol groups intact on prompt-too-long.
     modelRequestExecutor = new RecoveryManager({
       model: dependencies.model,
       compaction: compactionManager,
       config: dependencies.recoveryConfig,
     });
   }
-  // 启用动态 Prompt 时关闭 MemorySession.beforeModel() 的独立消息注入，由 Provider 统一输出记忆正文。
+  // When enabling dynamic prompts, disable standalone MemorySession.beforeModel() message injection; Provider outputs memory content uniformly.
   const memorySession = profile.capabilities.has("memory")
     ? createMemorySession(dependencies, !dynamicPrompt)
     : undefined;
@@ -127,17 +127,17 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     if (hooks === undefined || permissionPolicy === undefined) {
       throw new Error("subagent capability requires hooks and permission policy");
     }
-    // 子代理在 P06+ 启用，要求 hooks 与 permissionPolicy 共同构成跨 Agent 边界。
+    // Subagents are enabled in P06+, requiring hooks and permissionPolicy to form cross-Agent boundaries together.
     const subagent = new SubagentTool({
       modelFactory: () => dependencies.model,
       toolsFactory: () => {
         const childTools = createStandardTools(profile, commandRunner, fileSystem).tools;
         if (skillRegistry !== undefined) {
-          // 子代理共享 Skill 元数据快照，但每次创建独立工具注册表，避免跨任务状态泄漏。
+          // Subagents share Skill metadata snapshots, but create an independent Tool Registry each time to prevent state leaks across tasks.
           childTools.register(skillRegistry.toolDefinition);
         }
         if (dependencies.taskStore !== undefined) {
-          // 子 Agent 与主 Agent 使用同一个 TaskStore，看到的是同一张项目图。
+          // Subagents and the main Agent use the same TaskStore and see the same project graph.
           registerTaskTools(childTools, dependencies.taskStore);
         }
         return childTools;
@@ -148,22 +148,22 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     tools.register(subagent.toolDefinition);
   }
   if (skillRegistry !== undefined) {
-    // 主 Agent 固定注册技能工具，保持工具列表顺序稳定。
+    // Primary Agent registers Skill tools statically to keep the tool list order stable.
     tools.register(skillRegistry.toolDefinition);
   }
   if (dependencies.taskStore !== undefined) {
-    // 主 Agent 直接注册持久任务工具，与子 Agent 使用同一个 TaskStore。
+    // Primary Agent directly registers persistent task tools and shares the same TaskStore with subagents.
     registerTaskTools(tools, dependencies.taskStore);
   }
-  // 基础 system prompt 组装；非动态模式下仍按旧逻辑嵌入 todo/Skill 段落。
+  // Assemble base system prompt; embed todo/Skill sections with legacy logic when not in dynamic mode.
   let systemPrompt =
     todoTracker === undefined ? BASE_SYSTEM_PROMPT : `${BASE_SYSTEM_PROMPT}${TODO_SYSTEM_PROMPT}`;
   if (!dynamicPrompt && skillRegistry !== undefined) {
-    // 非动态模式时，Skill 目录在构建期静态嵌入 system prompt 结尾。
+    // In non-dynamic mode, the Skill catalog is statically embedded at the end of the system prompt during build.
     const catalog = skillRegistry.renderCatalog();
     systemPrompt = `${systemPrompt}${SKILLS_SYSTEM_PROMPT}${catalog.length === 0 ? EMPTY_SKILLS_CATALOG : catalog}`;
   }
-  // 动态模式时创建 Provider，由它统一渲染 identity、工具列表、workspace、Skill 目录和选中记忆。
+  // In dynamic mode, create the Provider to render identity, tool list, workspace, Skill catalog, and selected memory.
   const systemPromptProvider = dynamicPrompt
     ? new DynamicPromptProvider({
         renderer: new DynamicPromptRenderer(),
@@ -176,7 +176,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       })
     : undefined;
   return new AgentRunner({
-    // 固定 systemPrompt 保留为 fallback；provider 存在时每轮通过 render() 获取渲染结果。
+    // Retain fixed systemPrompt as fallback; get rendered results through render() each turn when provider exists.
     model: dependencies.model,
     tools,
     systemPrompt,
@@ -189,12 +189,12 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     ...(compactionManager === undefined
       ? {}
       : {
-          // 请求历史在模型调用前准备；工具结果在回填 canonical history 前经处理器。
+          // Request history is prepared before model calls; tool results pass through processors before backfilling into canonical history.
           historyProcessor: compactionManager,
           toolResultProcessor: async (results) =>
             (await compactionManager.compactToolResults(results)).results,
         }),
-    // 记忆生命周期与请求级压缩互补：压缩改变模型看到的旧历史，记忆在回合边界读写持久层。
+    // Memory lifecycle and request-level compaction complement each other: compaction changes past history seen by the model, while memory reads and writes persistence at turn boundaries.
     ...(memorySession === undefined ? {} : { turnLifecycle: memorySession }),
     ...(modelRequestExecutor === undefined ? {} : { modelRequestExecutor }),
     ...(dependencies.maxTurns === undefined ? {} : { maxTurns: dependencies.maxTurns }),
@@ -205,7 +205,7 @@ function createMemorySession(
   dependencies: BuildDependencies,
   emitContextMessages: boolean,
 ): MemorySession {
-  // emitContextMessages 为 false 时关闭 MemorySession.beforeModel() 的独立注入。
+  // When emitContextMessages is false, disable independent injection of MemorySession.beforeModel().
   const queries = new ModelMemoryQueries(dependencies.model);
   return new MemorySession({
     store: new MemoryStore({ workspace: dependencies.workspace }),
@@ -226,7 +226,7 @@ function createStandardTools(
   commandRunner: CommandRunner,
   fileSystem: WorkspaceFileSystem,
 ): StandardTools {
-  // createStandardTools 封装章节通用工具注册：先创建 shell 与文件工具集，再按 profile 能力决定是否追加 todo 工具。
+  // createStandardTools encapsulates chapter tool registration: create shell and file tools first, then append todo tools based on profile capabilities.
   const tools =
     profile.chapter === 1
       ? createChapterOneTools(commandRunner)
@@ -235,7 +235,7 @@ function createStandardTools(
   if (todoTracker === undefined) {
     return Object.freeze({ tools });
   }
-  // todo 工具注册后，对应的 toolRoundObserver 作为 agentOption 传入，提供自动规划能力。
+  // After registering todo tools, pass the corresponding toolRoundObserver as agentOption to provide automatic planning.
   tools.register(todoTracker.toolDefinition);
   return Object.freeze({ tools, todoTracker });
 }
@@ -245,26 +245,26 @@ function permissionPolicyForProfile(
   fileSystem: WorkspaceFileSystem,
   dependencies: BuildDependencies,
 ): PermissionPolicy | undefined {
-  // permissionPolicyForProfile 根据 profile 的 policy 能力组合权限策略；子代理复用同一套策略。
+  // permissionPolicyForProfile composes permission policies based on profile policy capabilities; subagents reuse the same policies.
   if (!profile.capabilities.has("policy")) {
-    // 没有 policy 能力时只接受外部注入的 approvalProvider；审计与写边界由外部控制。
+    // Accept only externally injected approvalProvider when lacking policy capability; external controls manage audit and write boundaries.
     return dependencies.approvalProvider === undefined
       ? undefined
       : new PermissionPolicy({ approval: dependencies.approvalProvider });
   }
   if (dependencies.approvalProvider === undefined) {
-    // 有 policy 能力时必须同时提供 approvalProvider，否则干脆断开发起路径。
+    // When policy capability exists, provide approvalProvider as well; otherwise, disconnect the origination path completely.
     throw new Error("approvalProvider is required for chapter 3 or later");
   }
   if (dependencies.auditSink === undefined) {
-    // policy 能力要求可审计的决策记录，缺少审计 sink 时拒绝启动。
+    // policy capability requires auditable decision records; startup is rejected when an audit sink is missing.
     throw new Error("auditSink is required for chapter 3 or later");
   }
   return new PermissionPolicy({
-    // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+    // Promote only write tools; default policy rules handle Shell execution approval.
     rules: [
       new PermissionRule({
-        // 文件写入审批规则：只有 write_file/edit_file 触发确认弹窗。
+        // File write approval rule: only write_file and edit_file trigger the confirmation dialog.
         name: "confirm-file-write",
         behavior: "ask",
         reason: "File writes require explicit approval from chapter 3 onward",

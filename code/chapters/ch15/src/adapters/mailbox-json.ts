@@ -1,4 +1,4 @@
-// FileMailboxStore 适配器：把 mailbox 领域协议落到 workspace/.agent_tutorial/mailboxes，提供文件锁和原子状态迁移。
+// FileMailboxStore adapter: applies mailbox domain protocol to workspace/.agent_tutorial/mailboxes, providing file locks and atomic state transitions.
 import { randomUUID } from "node:crypto";
 import {
   mkdir,
@@ -33,39 +33,39 @@ import {
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const LOCK_STALE_MS = 30_000;
 const LOCK_UPDATE_MS = 10_000;
-// 同一进程内对同一 workspace 串行化一次，避免多个 store 实例在文件锁之外竞争内存状态。
+// Serialize once per workspace in the same process to prevent multiple store instances from racing in-memory state outside file locks.
 const PROCESS_LOCK_TAILS = new Map<string, Promise<void>>();
 
 interface MailboxPaths {
-  // realpath 后的工作区根，用于验证所有邮箱路径未逃逸。
+  // Workspace root after realpath, used to verify all mailbox paths do not escape.
   readonly workspace: string;
-  // .agent_tutorial 状态根。
+  // .agent_tutorial state root.
   readonly stateRoot: string;
-  // 所有 Agent mailbox 的共同根目录。
+  // Common root directory for all Agent mailboxes.
   readonly root: string;
-  // 跨进程状态迁移锁路径。
+  // Inter-process state transition lock path.
   readonly lock: string;
 }
 
-// 每个 recipient 必须同时具备四个状态目录。
+// Each recipient must possess all four state directories.
 type MailboxDirectories = Readonly<Record<MailboxState, string>>;
 
 export interface FileMailboxStoreOptions {
-  // 消息 UUID 与时钟可注入，测试可稳定覆盖排序、碰撞和恢复场景。
+  // Message UUIDs and clocks are injectable; tests can stably cover sorting, collision, and recovery scenarios.
   readonly idGenerator?: () => string;
   readonly clock?: () => Date;
 }
 
-// 文件存储实现负责 ready/processing/done/quarantine 四态迁移；调用方只依赖 MailboxStore 协议。
+// File store implementations manage transitions across ready/processing/done/quarantine states. Callers depend only on the MailboxStore protocol.
 export class FileMailboxStore implements MailboxStore {
-  // 外部 workspace 输入；每次操作前重新解析真实路径。
+  // External workspace input; re-resolve real paths before each operation.
   readonly #workspaceInput: string;
-  // 默认生成规范消息 UUID。
+  // Defaults to generating canonical message UUIDs.
   readonly #idGenerator: () => string;
-  // 为消息提供创建时间，持久化前仍验证 Date 有效性。
+  // Provides creation time for messages and verifies Date validity before persistence.
   readonly #clock: () => Date;
 
-  // 校验工作区与注入边界；构造器不创建 mailbox 目录。
+  // Validate workspace and injection boundaries; constructor does not create mailbox directories.
   constructor(workspace: string, options: FileMailboxStoreOptions = {}) {
     if (typeof workspace !== "string" || workspace.trim().length === 0) {
       throw new TypeError("workspace must be a non-empty string");
@@ -81,7 +81,7 @@ export class FileMailboxStore implements MailboxStore {
     this.#clock = options.clock ?? (() => new Date());
   }
 
-  // 创建不可变消息并原子写入接收者 ready 目录，全局 UUID 冲突会拒绝发送。
+  // Creates immutable message and writes atomically to recipient ready directory; global UUID collision rejects send.
   async send(
     sender: string,
     recipient: string,
@@ -91,7 +91,7 @@ export class FileMailboxStore implements MailboxStore {
     return await this.#withLock(
       true,
       async (paths) => {
-        // 发送先校验消息，再写入目标 recipient 的 ready 目录，写入成功才返回消息。
+        // Sending validates the message first, then writes to the recipient's ready directory, returning the message only after write succeeds.
         const message = this.#newMessage(sender, recipient, content, kind);
         const directories = await this.#ensureMailbox(paths, message.recipient);
         if ((await this.#pathsForId(paths, message.id)).length > 0) {
@@ -109,7 +109,7 @@ export class FileMailboxStore implements MailboxStore {
     );
   }
 
-  // 按 createdAtUtc/id 认领最早消息，并通过 rename 原子获得 processing 租约。
+  // Claim the earliest message by createdAtUtc/id, and atomically acquire the processing lease through rename.
   async claim(recipient: string): Promise<MailboxMessage | undefined> {
     let normalized: string;
     try {
@@ -130,7 +130,7 @@ export class FileMailboxStore implements MailboxStore {
           MailboxState.Ready,
           normalized,
         );
-        // 按 (created_at_utc, id) 选出下一条，再用 rename 从 ready 原子迁移到 processing。
+        // Select the next item by (created_at_utc, id), then use rename to atomically migrate it from ready to processing.
         const selected = candidates.sort(compareMessages)[0];
         if (selected === undefined) return undefined;
         await move(
@@ -143,20 +143,20 @@ export class FileMailboxStore implements MailboxStore {
     );
   }
 
-  // 确认成功消费，将 processing 消息迁移到 done。
+  // Confirm successful consumption and transition the processing message to done.
   async ack(message: MailboxMessage): Promise<boolean> {
     return await this.#transition(message, MailboxState.Done);
   }
-  // 放弃当前租约，将 processing 消息退回 ready 等待重试。
+  // Abandon the current lease and return the processing message to ready to await retry.
   async release(message: MailboxMessage): Promise<boolean> {
     return await this.#transition(message, MailboxState.Ready);
   }
-  // 隔离不可重试消息，保留原始负载供审计。
+  // Isolates non-retryable messages, keeping raw payloads for audit.
   async quarantine(message: MailboxMessage): Promise<boolean> {
     return await this.#transition(message, MailboxState.Quarantine);
   }
 
-  // 恢复崩溃遗留的半开 processing 租约，按稳定顺序全部退回 ready。
+  // Recover half-open processing leases left by crashes, rolling all back to ready in stable order.
   async recoverProcessing(recipient: string): Promise<number> {
     let normalized: string;
     try {
@@ -171,7 +171,7 @@ export class FileMailboxStore implements MailboxStore {
       async (paths) => {
         const directories = await this.#existingMailbox(paths, normalized);
         if (directories === undefined) return 0;
-        // processing 是半开租约：消费者崩溃后恢复为 ready，让下次 claim 继续处理。
+        // processing is a half-open lease: recover to ready if consumer crashes, allowing subsequent claims to continue processing.
         const candidates = await this.#validEntries(
           paths,
           directories,
@@ -190,7 +190,7 @@ export class FileMailboxStore implements MailboxStore {
     );
   }
 
-  // 以完整消息快照校验租约所有权，再原子迁移到目标状态目录。
+  // Verifies lease ownership against complete message snapshot, then atomically moves to target state directory.
   async #transition(message: MailboxMessage, destination: MailboxState): Promise<boolean> {
     assertMailboxMessage(message);
     return await this.#withLock(
@@ -201,7 +201,7 @@ export class FileMailboxStore implements MailboxStore {
         const filename = `${message.id}.json`;
         const processing = join(directories[MailboxState.Processing], filename);
         if (!(await pathExists(processing))) {
-          // 第二个 runtime 可能已把旧消息恢复并完成 ack；此时允许对相同内容幂等确认。
+          // A second runtime might recover old messages and complete ack; idempotent confirmation of identical content is permitted.
           if (destination !== MailboxState.Done) return false;
           const completed = join(directories[MailboxState.Done], filename);
           if (!(await pathExists(completed))) return false;
@@ -220,7 +220,7 @@ export class FileMailboxStore implements MailboxStore {
             `Processing message does not match claimed message: ${message.id}`,
           );
         }
-        // ack/release/quarantine 都以当前 processing 文件为基准，目标目录已存在时拒绝覆盖。
+        // ack/release/quarantine all use the current processing file as baseline; reject overwriting if the target already exists.
         await this.#assertUniqueId(paths, message.id, processing);
         await move(processing, join(directories[destination], filename));
         return true;
@@ -229,14 +229,14 @@ export class FileMailboxStore implements MailboxStore {
     );
   }
 
-  // 调用可注入生成器后统一通过领域构造器验证并冻结消息。
+  // Call injectable generators, then validate and freeze messages uniformly through domain constructors.
   #newMessage(
     sender: string,
     recipient: string,
     content: string,
     kind: MailboxMessageKind,
   ): MailboxMessage {
-    // 消息 ID 和时间都由可注入生成器提供，但最终仍走统一领域校验。
+    // Message IDs and times come from injectable generators, but still pass through unified domain validation.
     let id: string;
     let createdAtUtc: Date;
     try {
@@ -261,9 +261,9 @@ export class FileMailboxStore implements MailboxStore {
     }
   }
 
-  // 构造并验证状态根；非发送操作遇到不存在的根目录时返回 undefined。
+  // Construct and validate state root; non-send operations return undefined when encountering a missing root directory.
   async #preparePaths(create: boolean): Promise<MailboxPaths | undefined> {
-    // 状态路径固定在 workspace/.agent_tutorial/mailboxes 下，创建和读取都验证不能逃逸 workspace。
+    // The state path is fixed under workspace/.agent_tutorial/mailboxes; both creation and reading validate it cannot escape workspace.
     try {
       const workspace = await realpath(this.#workspaceInput);
       if (!(await stat(workspace)).isDirectory()) throw new Error("workspace is not a directory");
@@ -291,16 +291,16 @@ export class FileMailboxStore implements MailboxStore {
     }
   }
 
-  // 在进程内队列和跨进程文件锁内执行完整状态操作，并定义缺失根目录的返回语义。
+  // Execute complete state operations within in-process queues and cross-process file locks, and define return semantics for missing root directories.
   async #withLock<T>(
     create: boolean,
     operation: (paths: MailboxPaths) => Promise<T>,
     whenMissing: () => Promise<T>,
   ): Promise<T> {
     const paths = await this.#preparePaths(create);
-    // claim/ack/release 等只读操作不隐式创建 mailbox；send 才允许 create=true 建立目录。
+    // Read-only operations such as claim/ack/release do not create mailboxes implicitly; only send allows create=true to create directories.
     if (paths === undefined) return await whenMissing();
-    // 进程内 mutex 加 proper-lockfile 目录锁双重串行化，保证状态迁移是原子读改写。
+    // Dual serialization with in-process mutex and proper-lockfile directory lock ensures state transitions are atomic read-modify-write operations.
     return await withProcessMutex(paths.workspace, async () => {
       let release: (() => Promise<void>) | undefined;
       try {
@@ -322,9 +322,9 @@ export class FileMailboxStore implements MailboxStore {
     });
   }
 
-  // 为新 recipient 创建并验证完整四态目录集合。
+  // Creates and validates the full four-state directory set for new recipients.
   async #ensureMailbox(paths: MailboxPaths, recipient: string): Promise<MailboxDirectories> {
-    // 每个收件人拥有四个状态目录，缺失时由发送方一次性创建。
+    // Each recipient owns four state directories; the sender creates missing ones at once.
     const root = join(paths.root, recipient);
     await mkdir(root, { recursive: true });
     await validateDirectory(paths.workspace, root, `Mailbox ${recipient}`);
@@ -338,12 +338,12 @@ export class FileMailboxStore implements MailboxStore {
     return Object.freeze(directories);
   }
 
-  // 读取既有 recipient 目录；任何状态目录缺失都按存储损坏处理。
+  // Read existing recipient directory; treat any missing state directory as storage corruption.
   async #existingMailbox(
     paths: MailboxPaths,
     recipient: string,
   ): Promise<MailboxDirectories | undefined> {
-    // 读取既有 mailbox 时要求四个状态目录都完整，缺失不能静默当作空收件箱。
+    // Reading an existing mailbox requires all four state directories intact; missing directories cannot silently count as an empty inbox.
     const root = join(paths.root, recipient);
     if (!(await pathExists(root))) return undefined;
     await validateDirectory(paths.workspace, root, `Mailbox ${recipient}`);
@@ -359,7 +359,7 @@ export class FileMailboxStore implements MailboxStore {
     return Object.freeze(directories);
   }
 
-  // 扫描一个状态目录，验证文件名、payload 和 recipient，并隔离损坏记录。
+  // Scan a status directory, validate file names, payloads, and recipients, and quarantine corrupted records.
   async #validEntries(
     paths: MailboxPaths,
     directories: MailboxDirectories,
@@ -369,7 +369,7 @@ export class FileMailboxStore implements MailboxStore {
     const directory = directories[state];
     if (directory === undefined)
       throw new MailboxStorageError("Mailbox state directory is missing");
-    // 逐个严格校验文件；坏消息先移入 quarantine，不阻塞同一目录中的合法消息。
+    // Strictly validates files one by one; bad messages move to quarantine first without blocking valid messages in the same directory.
     const entries = await readdir(directory, { withFileTypes: true });
     const candidates: Array<{ readonly message: MailboxMessage; readonly path: string }> = [];
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -393,9 +393,9 @@ export class FileMailboxStore implements MailboxStore {
     return candidates;
   }
 
-  // 严格读取单个消息文件，并验证文件名 UUID 与 payload 接收者一致。
+  // Strictly reads a single message file and verifies that the file name UUID matches the payload recipient.
   async #loadMessage(path: string, recipient: string): Promise<MailboxMessage> {
-    // 文件名、payload 和 recipient 必须三方一致，任何错配都按存储错误处理。
+    // File name, payload, and recipient must match. Treat any mismatch as a storage error.
     const name = path.split(/[\\/]/u).at(-1) ?? "";
     if (!name.endsWith(".json"))
       throw new MailboxStorageError(`Mailbox message extension is invalid: ${name}`);
@@ -426,14 +426,14 @@ export class FileMailboxStore implements MailboxStore {
     }
   }
 
-  // 将损坏或非法消息移到 quarantine，避免阻塞其他合法消息的 claim。
+  // Move corrupted or illegal messages to quarantine to avoid blocking claims on other valid messages.
   async #moveInvalid(source: string, directories: MailboxDirectories): Promise<void> {
     const quarantine = directories[MailboxState.Quarantine];
     if (quarantine === undefined)
       throw new MailboxStorageError("Mailbox quarantine directory is missing");
     const name = source.split(/[\\/]/u).at(-1) ?? "invalid";
     let destination = join(quarantine, name);
-    // quarantine 已有同名文件时追加不冲突后缀，保留两份证据。
+    // When quarantine already has a file with the same name, append a non-conflicting suffix to retain both pieces of evidence.
     for (let index = 1; await pathExists(destination); index += 1) {
       const suffix = name.endsWith(".json") ? ".json" : "";
       const stem = suffix.length === 0 ? name : name.slice(0, -suffix.length);
@@ -442,9 +442,9 @@ export class FileMailboxStore implements MailboxStore {
     await move(source, destination);
   }
 
-  // 跨所有 Agent 和状态目录查找同一 UUID，保证工作区级主键唯一。
+  // Search for the same UUID across all Agents and state directories to guarantee workspace-level primary key uniqueness.
   async #pathsForId(paths: MailboxPaths, id: string): Promise<readonly string[]> {
-    // 跨 Agent 扫描所有 mailbox 和状态目录，保证同一个 UUID 在整个工作区唯一。
+    // Scan all mailboxes and state directories across Agents to guarantee identical UUIDs remain unique across the entire workspace.
     const result: string[] = [];
     for (const entry of await readdir(paths.root, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) {
@@ -470,9 +470,9 @@ export class FileMailboxStore implements MailboxStore {
     return result;
   }
 
-  // 状态迁移前确认除当前源文件外没有同 UUID 副本。
+  // Verify there are no duplicate files with the same UUID other than the current source file before state transition.
   async #assertUniqueId(paths: MailboxPaths, id: string, source: string): Promise<void> {
-    // 发现同 ID 已存在于其他状态目录时显式失败，不能覆盖旧消息。
+    // Fail explicitly when the same ID exists in other state directories; cannot overwrite older messages.
     const collisions = (await this.#pathsForId(paths, id)).filter((path) => path !== source);
     if (collisions.length > 0) {
       throw new MailboxStorageError(`Mailbox message id exists in multiple states: ${id}`);
@@ -480,12 +480,12 @@ export class FileMailboxStore implements MailboxStore {
   }
 }
 
-// Mailbox 的稳定消费顺序为创建时间优先、UUID 次序兜底。
+// Stable consumption order of Mailbox prioritizes creation time, falling back to UUID order.
 function compareMessages(
   left: { readonly message: MailboxMessage },
   right: { readonly message: MailboxMessage },
 ): number {
-  // FIFO 顺序由创建时间决定，时间相同再用 UUID 文本稳定打破平局。
+  // FIFO order is determined by creation time, stably breaking ties with UUID text when times match.
   return (
     left.message.createdAtUtc.valueOf() - right.message.createdAtUtc.valueOf() ||
     left.message.id.localeCompare(right.message.id)
@@ -503,7 +503,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function validateDirectory(workspace: string, path: string, label: string): Promise<void> {
-  // 状态目录必须是 workspace 内真实目录，防止符号链接或相对路径把状态写到外部。
+  // The state directory must be a real directory inside the workspace to prevent symlinks or relative paths from writing state outside.
   const resolved = await realpath(path);
   const details = await lstat(path);
   if (!details.isDirectory() || details.isSymbolicLink() || !isWithin(workspace, resolved)) {
@@ -511,14 +511,14 @@ async function validateDirectory(workspace: string, path: string, label: string)
   }
 }
 
-// 验证 realpath 后的候选仍在 mailbox 根内。
+// Verifies that candidates after realpath remain inside the mailbox root.
 function isWithin(root: string, candidate: string): boolean {
   const value = relative(root, candidate);
   return value === "" || (!value.startsWith("..") && !value.includes(":"));
 }
 
 async function atomicWrite(path: string, content: Buffer): Promise<void> {
-  // 先写临时文件、sync、再 rename，读方只能看到完整旧文件或完整新文件。
+  // Writes temporary file first, syncs, then renames; readers see only complete old file or complete new file.
   const temporary = join(
     path.slice(0, Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1),
     `.${path.split(/[\\/]/u).at(-1) ?? "mailbox"}.${randomUUID()}.tmp`,
@@ -540,7 +540,7 @@ async function atomicWrite(path: string, content: Buffer): Promise<void> {
 }
 
 async function move(source: string, destination: string): Promise<void> {
-  // rename 前显式拒绝已存在目标，避免两个状态目录同时持有同一消息。
+  // Explicitly reject existing targets before rename to prevent two state directories holding the same message simultaneously.
   if (await pathExists(destination)) {
     throw new MailboxStorageError(
       `Mailbox destination already exists: ${destination.split(/[\\/]/u).at(-1)}`,
@@ -553,7 +553,7 @@ async function move(source: string, destination: string): Promise<void> {
   }
 }
 
-// 通过领域构造器复验调用方传入的消息快照。
+// Re-validates message snapshots passed by callers through domain constructors.
 function assertMailboxMessage(value: MailboxMessage): void {
   try {
     createMailboxMessage(value);
@@ -563,7 +563,7 @@ function assertMailboxMessage(value: MailboxMessage): void {
 }
 
 async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  // 用 Promise 队列把同进程内对同一 workspace 的操作串行化，避免并发操作覆盖内存状态。
+  // Use a Promise queue to serialize operations on the same workspace within the process, preventing concurrent operations from overwriting memory state.
   const previous = PROCESS_LOCK_TAILS.get(key) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -581,6 +581,6 @@ async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Pr
 }
 
 function isNodeError(value: unknown, code: string): boolean {
-  // 只根据 Node 错误码判断常见 ENOENT，其他异常继续向上传播。
+  // Check common ENOENT only by Node error codes; propagate other exceptions upward.
   return typeof value === "object" && value !== null && "code" in value && value.code === code;
 }

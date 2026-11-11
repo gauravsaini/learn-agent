@@ -1,4 +1,4 @@
-// mailbox 领域模型：定义持久消息、状态目录与 Store 协议，供 teammate 运行时和文件适配器共用；P16 在其上扩展结构化协议消息。
+// Mailbox domain model: defines persistent messages, state directories, and Store protocols shared by teammate runtime and file adapters; P16 extends structured protocol messages.
 import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { RuntimeEvent } from "../core/events.js";
 import { isWindowsReservedComponent } from "../core/filesystem.js";
 
-// 消息类型决定消费者如何解释 content，但不能改变 mailbox 的持久化协议。
+// The message type determines how consumers interpret content, but cannot change the mailbox persistence protocol.
 export const MailboxMessageKind = Object.freeze({
   Task: "task",
   Message: "message",
@@ -14,7 +14,7 @@ export const MailboxMessageKind = Object.freeze({
 });
 export type MailboxMessageKind = (typeof MailboxMessageKind)[keyof typeof MailboxMessageKind];
 
-// 协议消息在普通 mailbox 上新增 typed 扩展；request 与 response 的 kind 决定 approved 的取值。
+// Protocol messages add typed extensions to ordinary mailboxes; the kind of request and response determines the value of approved.
 export const ProtocolMessageKind = Object.freeze({
   ShutdownRequest: "shutdown_request",
   ShutdownResponse: "shutdown_response",
@@ -23,7 +23,7 @@ export const ProtocolMessageKind = Object.freeze({
 });
 export type ProtocolMessageKind = (typeof ProtocolMessageKind)[keyof typeof ProtocolMessageKind];
 
-// 每个目录名对应一个持久状态；同一条消息只允许在 ready/processing/done/quarantine 之一。
+// Each directory name corresponds to a persistent state; a message is allowed only in ready, processing, done, or quarantine.
 export const MailboxState = Object.freeze({
   Ready: "ready",
   Processing: "processing",
@@ -32,7 +32,7 @@ export const MailboxState = Object.freeze({
 });
 export type MailboxState = (typeof MailboxState)[keyof typeof MailboxState];
 
-// 协议或持久化错误携带稳定 errorCode，工具边界可把它转成结构化 ToolResult。
+// Protocol or persistence errors carry a stable errorCode so the tool boundary can convert them to structured ToolResult.
 export class MailboxError extends Error {
   readonly errorCode: string;
 
@@ -43,7 +43,7 @@ export class MailboxError extends Error {
   }
 }
 
-// 文件损坏、锁失败和状态迁移冲突统一映射到同一错误族，调用方无需猜测底层异常。
+// Map file corruption, lock failures, and state transition conflicts to the same error family. Callers do not need to guess underlying exceptions.
 export class MailboxStorageError extends MailboxError {
   constructor(message: string, options?: ErrorOptions) {
     super("mailbox_storage_error", message, options);
@@ -51,7 +51,7 @@ export class MailboxStorageError extends MailboxError {
   }
 }
 
-// 邮箱消息以稳定 id、发送者和接收者建模，持久层据此保证投递与确认可追踪。
+// Mailbox messages are modeled with stable ID, sender, and recipient; the persistence layer guarantees delivery and acknowledgment are traceable.
 export interface MailboxMessage extends RuntimeEvent {
   readonly id: string;
   readonly sender: string;
@@ -63,57 +63,57 @@ export interface MailboxMessage extends RuntimeEvent {
   readonly idempotencyKey: string;
 }
 
-// 协议消息额外携带 requestId 和 approved；request 只接受 null，response 必须携带布尔决策。
+// Protocol messages carry requestId and approved; requests only accept null, and responses must carry a boolean decision.
 export interface ProtocolMailboxMessage extends RuntimeEvent {
-  // 传输消息 UUID，同时作为 RuntimeEvent.eventId 和幂等键。
+  // Transport message UUID, serves as both RuntimeEvent.eventId and idempotency key.
   readonly id: string;
-  // 请求方向为原发起者，响应方向为原目标方。
+  // Request direction points to the original initiator; response direction points to the original target.
   readonly sender: string;
-  // 必须与关联请求的相反方向严格匹配。
+  // Must match strictly with the opposite direction of the associated request.
   readonly recipient: string;
-  // typed kind 决定该消息是请求还是响应，以及对应协议种类。
+  // typed kind determines whether this message is a request or response, along with the corresponding protocol type.
   readonly kind: ProtocolMessageKind;
-  // 请求正文需与已登记 request 一致；响应正文承载反馈或确认。
+  // Request body must match the registered request; response body carries feedback or confirmation.
   readonly content: string;
-  // 消息创建时间属于传输记录，不替代请求的状态迁移时间。
+  // Message creation time belongs to the transport record and does not replace the state transition time of the request.
   readonly createdAtUtc: Date;
-  // 关联 ProtocolStore 中的请求 UUID，而不是当前消息自身 id。
+  // Correlates request UUID in ProtocolStore, not the current message ID.
   readonly requestId: string;
-  // 请求固定为 null，响应必须为明确 boolean 决策。
+  // Request is fixed to null; response must be an explicit boolean decision.
   readonly approved: boolean | null;
-  // Agent Loop 用该值去重事件发布和 ack 重试。
+  // Agent Loop uses this value to deduplicate event publication and ack retries.
   readonly eventId: string;
-  // 工具执行沿用消息 id，支持协议响应恢复同一 Runner 时去重副作用。
+  // Tool execution follows message ids, supporting side-effect deduplication when protocol responses restore the same Runner.
   readonly idempotencyKey: string;
 }
 
-// MailboxItem 让普通协作消息与 typed 协议消息共享同一租约状态机。
+// MailboxItem lets normal collaboration messages and typed protocol messages share the same lease state machine.
 export type MailboxItem = MailboxMessage | ProtocolMailboxMessage;
 
-// Store 暴露发送、认领和确认的协议操作，具体文件持久化留在适配器。
+// Store exposes protocol operations for send, claim, and ack; concrete file persistence remains in adapters.
 export interface MailboxStore {
-  // 普通消息与协议消息共用同一套四态迁移，Store 不关心 content 的业务含义。
+  // Normal and protocol messages share the four-state migration; the Store does not care about the business meaning of content.
   send(
     sender: string,
     recipient: string,
     content: string,
     kind: MailboxMessageKind,
   ): Promise<MailboxMessage>;
-  // claim 将最早 ready 消息原子迁移到 processing，并返回其租约快照。
+  // claim atomically transitions the earliest ready message to processing and returns its lease snapshot.
   claim(recipient: string): Promise<MailboxItem | undefined>;
-  // ack 仅接受当前 processing 消息并迁移到 done。
+  // ack accepts only the current processing message and transitions it to done.
   ack(message: MailboxItem): Promise<boolean>;
-  // release 把取消或可重试失败的 processing 消息退回 ready。
+  // release reverts cancelled or retriable failed processing messages to ready.
   release(message: MailboxItem): Promise<boolean>;
-  // quarantine 隔离不可重试的畸形或业务失败消息。
+  // quarantine isolates non-retriable malformed or business failure messages.
   quarantine(message: MailboxItem): Promise<boolean>;
-  // 启动时恢复进程崩溃遗留的 processing 租约，并返回恢复数量。
+  // Recover processing leases leftover from process crashes on startup, returning the recovered count.
   recoverProcessing(recipient: string): Promise<number>;
 }
 
-// 只有支持协议消息的 store 才实现 sendProtocol；Runtime 在构造边界做类型判定。
+// Only stores supporting protocol messages implement sendProtocol; Runtime performs type checks at construction boundaries.
 export interface ProtocolMailboxStore extends MailboxStore {
-  // sendProtocol 在发送时就把 request_id/approved 变成 typed payload，不让模型手工拼 JSON。
+  // sendProtocol turns request_id/approved into typed payloads on send, preventing models constructing JSON manually.
   sendProtocol(
     sender: string,
     recipient: string,
@@ -143,7 +143,7 @@ export const sendMessageInputSchema = z
   .strict();
 export type SendMessageInput = z.infer<typeof sendMessageInputSchema>;
 
-// Agent 名会被用作文件目录名，因此同时校验 slug 规则和 Windows 保留组件。
+// The Agent name is used as a directory name, so it validates both slug rules and Windows reserved components.
 export function canonicalAgentName(value: string): string {
   if (typeof value !== "string" || !AGENT_NAME.test(value) || isWindowsReservedComponent(value)) {
     throw new Error("Invalid or unsafe Agent name; expected a safe lowercase slug");
@@ -152,14 +152,14 @@ export function canonicalAgentName(value: string): string {
 }
 
 export function canonicalMailboxMessageId(value: string): string {
-  // UUID 既是消息主键也是事件 idempotency key，必须使用规范格式。
+  // The UUID is both the message primary key and the event idempotency key: it must use canonical format.
   if (typeof value !== "string" || !CANONICAL_UUID.test(value)) {
     throw new Error("Mailbox message id must be a canonical UUID");
   }
   return value;
 }
 
-// 构造边界统一校验 id、sender、recipient、kind、content 和时钟，返回不可变消息。
+// Validate id, sender, recipient, kind, content, and clock at the construction boundary, returning immutable messages.
 export function createMailboxMessage(input: {
   id: string;
   sender: string;
@@ -194,7 +194,7 @@ export function createMailboxMessage(input: {
   });
 }
 
-// 协议消息构造边界额外校验 requestId 与 approved 的匹配关系，request 和 response 不能互相伪装。
+// The protocol message construction boundary validates matching between requestId and approved; requests and responses cannot disguise as each other.
 export function createProtocolMailboxMessage(input: {
   id: string;
   sender: string;
@@ -245,7 +245,7 @@ export function createProtocolMailboxMessage(input: {
   });
 }
 
-// 磁盘 JSON 是外部输入，必须拒绝未知字段和非法值，避免坏消息污染运行态。
+// On-disk JSON is external input and must reject unknown fields and invalid values to prevent bad messages from corrupting runtime state.
 export function mailboxMessageFromJson(value: unknown): MailboxMessage {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new MailboxStorageError("Mailbox message payload is invalid");
@@ -291,9 +291,9 @@ export function mailboxMessageFromJson(value: unknown): MailboxMessage {
   }
 }
 
-// 普通与协议消息共用反序列化入口；先按 kind 分流，再走严格字段校验。
+// Normal and protocol messages share a deserialization entry point: branch by kind first, then apply strict field validation.
 export function mailboxItemFromJson(value: unknown): MailboxItem {
-  // 联合反序列化先按 kind 分流：普通消息走原 schema，协议消息才允许 request_id/approved。
+  // Discriminated deserialization branches by kind first: normal messages use the original schema; protocol messages allow request_id/approved.
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new MailboxStorageError("Mailbox message payload is invalid");
   }
@@ -352,7 +352,7 @@ export function mailboxItemFromJson(value: unknown): MailboxItem {
   }
 }
 
-// 持久化使用 snake_case 的稳定字段名，内存对象保持 camelCase，转换只在边界发生。
+// Persistence uses stable snake_case field names while in-memory objects keep camelCase; conversions occur at boundaries only.
 export function mailboxMessageToJson(message: MailboxMessage): Readonly<Record<string, string>> {
   return Object.freeze({
     id: message.id,
@@ -364,7 +364,7 @@ export function mailboxMessageToJson(message: MailboxMessage): Readonly<Record<s
   });
 }
 
-// 普通与协议消息共用序列化入口；协议字段只在边界出现，避免污染普通消息。
+// Normal and protocol messages share a serialization entry point; protocol fields appear only at boundaries to avoid polluting normal messages.
 export function mailboxItemToJson(
   message: MailboxItem,
 ): Readonly<Record<string, string | boolean | null>> {
@@ -384,7 +384,7 @@ export function mailboxItemToJson(
 }
 
 export function equalMailboxMessages(left: MailboxMessage, right: MailboxMessage): boolean {
-  // 幂等 ack 需要按完整消息内容比较，不能只比较 id，否则可能确认了错误的负载。
+  // Idempotent ack requires comparing full message content rather than just ids; otherwise it might confirm the wrong payload.
   return (
     left.id === right.id &&
     left.sender === right.sender &&
@@ -416,23 +416,23 @@ export function equalMailboxItems(left: MailboxItem, right: MailboxItem): boolea
   );
 }
 
-// 通过 payload 的稳定标记识别协议消息，不依赖字符串前缀或鸭子类型字段。
+// Identifies protocol messages via stable markers on payload, without relying on string prefixes or duck-typed fields.
 export function isProtocolMailboxMessage(message: RuntimeEvent): message is ProtocolMailboxMessage {
   const payload = message.toPayload();
   return payload.kind === "protocol" && "request_id" in payload && "protocol_kind" in payload;
 }
 
-// 构造期用 sendProtocol 能力区分普通 MailboxStore 与协议扩展 store。
+// Use sendProtocol capability at construction to distinguish standard MailboxStore from protocol extension stores.
 export function isProtocolMailboxStore(store: MailboxStore): store is ProtocolMailboxStore {
   return typeof Reflect.get(store, "sendProtocol") === "function";
 }
 
 export function randomMailboxMessageId(): string {
-  // 默认 id 生成器只在生产构造时使用；测试可注入确定 UUID。
+  // Default ID generator is used only during production construction; tests can inject deterministic UUIDs.
   return randomUUID();
 }
 
-// RuntimeEvent 的 payload 暴露结构化字段，避免调用方通过字符串前缀判断消息类型。
+// RuntimeEvent payload exposes structured fields to prevent callers from determining message types by string prefixes.
 function mailboxPayload(this: MailboxMessage): Readonly<Record<string, unknown>> {
   return Object.freeze({
     kind: "mailbox",
@@ -445,7 +445,7 @@ function mailboxPayload(this: MailboxMessage): Readonly<Record<string, unknown>>
   });
 }
 
-// 协议 payload 额外携带 request_id 与 approved，供 EventInbox 和协议路由区分消息类型。
+// Protocol payloads carry request_id and approved so EventInbox and protocol routing distinguish message types.
 function protocolMailboxPayload(this: ProtocolMailboxMessage): Readonly<Record<string, unknown>> {
   return Object.freeze({
     kind: "protocol",

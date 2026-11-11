@@ -1,4 +1,4 @@
-// 第 12 章任务 DAG 的领域模型与工具注册：Task 构造器、TaskStore 接口和五个任务工具共用同一套校验边界。
+// Chapter 12 task DAG domain model and tool registration: Task constructor, TaskStore interface, and five task tools share the same validation boundary.
 import { z } from "zod";
 
 import type { ToolDefinition, ToolRegistry } from "../core/tools.js";
@@ -6,44 +6,44 @@ import { toolError, toolSuccess } from "../core/tools.js";
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
-// 任务三态是迁移的唯一来源；blocked 不落盘，而是由依赖图在 claim 时派生。
+// The three task states are the sole source of transitions; blocked does not persist, but derives from the dependency graph during claim.
 export const TaskStatus = Object.freeze({
   PENDING: "pending",
   IN_PROGRESS: "in_progress",
   COMPLETED: "completed",
 } as const);
 
-// 状态集合是任务迁移的单一来源；pending/in_progress/completed 之外的状态不会进入模型。
+// The state set is the single source of truth for task transitions; states other than pending, in_progress, and completed do not enter the model.
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 
 export interface TaskOptions {
-  // 规范 UUID，唯一标识任务。
+  // Canonical UUID, uniquely identifying a task.
   readonly id: string;
-  // 任务标题，用于模型规划与列表展示。
+  // Task title, used for model planning and list display.
   readonly subject: string;
-  // 任务详细说明，可为空字符串。
+  // Detailed task description, can be an empty string.
   readonly description: string;
-  // 当前状态；pending 无 owner，其他状态必须有 owner。
+  // Current status; pending has no owner, other states must have an owner.
   readonly status: TaskStatus;
-  // 认领者身份；pending 必须为 null。
+  // Claimer identity; pending must be null.
   readonly owner: string | null;
-  // 依赖任务的规范 UUID；依赖未完成时任务不可 claim。
+  // Canonical UUID of dependent task; task cannot be claimed when dependency is incomplete.
   readonly blockedBy: readonly string[];
 }
 
 export class Task {
-  // Task 构造器集中维护状态、owner 与依赖的领域不变量，存储层不得绕过它。
-  // 规范 UUID，同时是存储文件名和引用 key。
+  // Task constructor centrally maintains domain invariants for status, owner, and dependencies; storage layers must not bypass it.
+  // Canonical UUID, acting as both storage file name and reference key.
   readonly id: string;
-  // 归一化后的任务标题。
+  // Normalized task title.
   readonly subject: string;
-  // 归一化后的任务说明。
+  // Normalized task description.
   readonly description: string;
-  // 当前任务状态。
+  // Current task status.
   readonly status: TaskStatus;
-  // 当前 owner；pending 必须为 null。
+  // Current owner; pending must be null.
   readonly owner: string | null;
-  // 上游依赖 id 列表，冻结后不可修改。
+  // Upstream dependency ID list, immutable once frozen.
   readonly blockedBy: readonly string[];
 
   constructor(options: TaskOptions) {
@@ -68,13 +68,13 @@ export class Task {
 }
 
 export interface TaskCompletion {
-  // 本次完成的任务。
+  // Tasks completed this time.
   readonly task: Task;
-  // 因本次完成而从 blocked 变为 ready 的 pending 任务。
+  // Pending tasks transitioning from blocked to ready due to this completion.
   readonly unblocked: readonly Task[];
 }
 
-// 任务领域错误基类；code 用于工具层返回稳定错误码。
+// Base class for task domain errors; code is used by tool layer to return stable error codes.
 export class TaskError extends Error {
   readonly code: string;
 
@@ -85,7 +85,7 @@ export class TaskError extends Error {
   }
 }
 
-// 任务不存在。
+// Task does not exist.
 export class TaskNotFoundError extends TaskError {
   constructor(message: string) {
     super("task_not_found", message);
@@ -93,7 +93,7 @@ export class TaskNotFoundError extends TaskError {
   }
 }
 
-// 依赖图不满足无环或引用约束。
+// Dependency graph does not satisfy acyclic or reference constraints.
 export class TaskGraphError extends TaskError {
   constructor(message: string, options?: ErrorOptions) {
     super("task_graph_error", message, options);
@@ -101,7 +101,7 @@ export class TaskGraphError extends TaskError {
   }
 }
 
-// 任务状态不允许当前迁移。
+// Task state does not allow the current transition.
 export class TaskStateError extends TaskError {
   constructor(message: string, code = "task_invalid_state") {
     super(code, message);
@@ -109,7 +109,7 @@ export class TaskStateError extends TaskError {
   }
 }
 
-// 任务仍被未完成任务阻塞，claim 被拒绝。
+// Task is still blocked by unfinished tasks; claim is denied.
 export class TaskBlockedError extends TaskStateError {
   readonly taskId: string;
   readonly blockedBy: readonly string[];
@@ -122,7 +122,7 @@ export class TaskBlockedError extends TaskStateError {
   }
 }
 
-// owner 与当前认领者不匹配。
+// owner does not match the current claimant.
 export class TaskOwnershipError extends TaskError {
   constructor(message: string) {
     super("task_owner_mismatch", message);
@@ -130,7 +130,7 @@ export class TaskOwnershipError extends TaskError {
   }
 }
 
-// 任务存储层读写或 schema 校验失败。
+// Task store read/write or schema validation failed.
 export class TaskStorageError extends TaskError {
   constructor(message: string, options?: ErrorOptions) {
     super("task_storage_error", message, options);
@@ -139,30 +139,30 @@ export class TaskStorageError extends TaskError {
 }
 
 export interface CreateTaskInput {
-  // 必填任务标题。
+  // Required task title.
   readonly subject: string;
-  // 可选说明；缺省由 store 归一化为空字符串。
+  // Optional description; the store normalizes to an empty string when omitted.
   readonly description?: string;
-  // 可选上游依赖；缺省为空。
+  // Optional upstream dependencies; defaults to empty.
   readonly blockedBy?: readonly string[];
 }
 
-// TaskStore 是所有持久化实现必须满足的窄接口，工具层不依赖 JSON 或 SQLite 具体实现。
+// TaskStore is the narrow interface all persistent implementations must satisfy; tool layer does not depend on concrete JSON or SQLite implementations.
 export interface TaskStore {
-  // 任务图操作以完整 Task 返回，调用者不能通过局部补丁跳过状态迁移校验。
-  // 在锁内创建任务，并校验唯一 id、依赖存在性和全图无环。
+  // Task graph operations return complete Task; callers cannot bypass state transition checks via partial patches.
+  // Create tasks inside the lock and validate unique id, dependency existence, and acyclicity of the full graph.
   createTask(input: CreateTaskInput): Promise<Task>;
-  // 按规范 UUID 读取单个任务。
+  // Read a single task by canonical UUID.
   getTask(taskId: string): Promise<Task>;
-  // 返回按 id 排序的完整任务图快照。
+  // Returns a full task graph snapshot sorted by ID.
   listTasks(): Promise<readonly Task[]>;
-  // 仅把 ready pending 任务原子迁移为指定 owner 的 in_progress。
+  // Atomically transitions only ready pending tasks to in_progress for the specified owner.
   claimTask(taskId: string, owner: string): Promise<Task>;
-  // 仅由当前 owner 完成 in_progress 任务，并返回直接解除阻塞的 pending 任务。
+  // Completes in_progress tasks only by current owner, and returns pending tasks unblocked directly.
   completeTask(taskId: string, owner: string): Promise<TaskCompletion>;
 }
 
-// 工具 schema 都使用 .strict()，额外字段会在任何副作用前被拒绝。
+// All tool schemas use .strict(); extra fields are rejected before any side effects.
 const taskIdSchema = z.string().regex(CANONICAL_UUID, "task_id must be a canonical UUID");
 const createTaskSchema = z
   .object({
@@ -174,12 +174,12 @@ const createTaskSchema = z
 const taskIdInputSchema = z.object({ task_id: taskIdSchema }).strict();
 const listTasksInputSchema = z.object({}).strict();
 
-// 工具参数沿用磁盘命名 blocked_by，避免模型可见字段与存储格式之间出现另一层映射。
+// Tool parameters follow on-disk naming blocked_by, avoiding another mapping layer between model-visible fields and storage formats.
 export function registerTaskTools(registry: ToolRegistry, store: TaskStore): void {
-  // 五个工具统一由这里注册，schema 与 handler 都来自同一 ToolDefinition。
+  // Five tools are registered centrally here; schema and handler both come from the same ToolDefinition.
   registry.register(createTaskDefinition(store));
   registry.register(
-    // get_task 是只读查询，不改变状态或 owner。
+    // get_task is a read-only query; it does not change state or owner.
     taskIdDefinition(
       "get_task",
       "Read one persistent project task by canonical UUID. Read-only; it does not change status or owner.",
@@ -189,14 +189,14 @@ export function registerTaskTools(registry: ToolRegistry, store: TaskStore): voi
   );
   registry.register({
     name: "list_tasks",
-    // 返回完整图快照，调用方才能根据依赖和 ready 状态做规划。
+    // Returns a full graph snapshot so callers can plan based on dependencies and ready states.
     description:
       "List the complete persistent project task graph sorted by ID. Use it before create_task to find canonical UUIDs or before claim_task to find ready tasks.",
     inputSchema: listTasksInputSchema,
     effect: "read",
     handler: async (_input, _context) => {
       try {
-        // 返回完整图而不是局部任务，避免模型只看到部分依赖关系。
+        // Returns the full graph instead of local tasks to prevent the model from seeing only partial dependencies.
         const tasks = await store.listTasks();
         return toolSuccess(encodePayload({ tasks: tasks.map(taskPayload) }));
       } catch (error) {
@@ -205,7 +205,7 @@ export function registerTaskTools(registry: ToolRegistry, store: TaskStore): voi
     },
   });
   registry.register(
-    // claim 的 owner 只来自 ToolContext.identity，模型不能选择替谁完成任务。
+    // The claim owner comes only from ToolContext.identity; the model cannot choose on whose behalf to complete the task.
     taskIdDefinition(
       "claim_task",
       "Atomically claim a ready pending task as the current identity. Owner is set by the runtime identity; do not pass an owner argument.",
@@ -215,7 +215,7 @@ export function registerTaskTools(registry: ToolRegistry, store: TaskStore): voi
   );
   registry.register({
     name: "complete_task",
-    // 完成者只能来自可信 ToolContext.identity。
+    // Completer can only come from trusted ToolContext.identity.
     description:
       "Complete a claimed task owned by the current identity. Returns the completed task and any pending tasks directly unblocked by this completion.",
     inputSchema: taskIdInputSchema,
@@ -242,14 +242,14 @@ export function registerTaskTools(registry: ToolRegistry, store: TaskStore): voi
 function createTaskDefinition(store: TaskStore): ToolDefinition<z.infer<typeof createTaskSchema>> {
   return {
     name: "create_task",
-    // blocked_by 必须引用 list_tasks/get_task 返回的规范 UUID。
+    // blocked_by must reference a canonical UUID returned by list_tasks/get_task.
     description:
       "Create a persistent project task after planning. blocked_by must contain canonical task UUIDs returned by list_tasks or get_task.",
     inputSchema: createTaskSchema,
     effect: "write",
     handler: async (input) => {
       try {
-        // handler 只做输入到 TaskStore 的转发；全图校验与原子写入由持久化边界负责。
+        // handler only forwards input to TaskStore; the persistence boundary handles full graph validation and atomic writes.
         const task = await store.createTask({
           subject: input.subject,
           description: input.description,
@@ -269,8 +269,8 @@ function taskIdDefinition(
   effect: "read" | "write",
   store: TaskStore,
 ): ToolDefinition<z.infer<typeof taskIdInputSchema>> {
-  // get/claim 共用 task_id schema，只有 store 调用和 effect 不同。
-  // get/claim 共用 task_id schema；claim 的 owner 只来自 ToolContext.identity，不接受模型参数。
+  // get/claim share the task_id schema; only store invocations and effects differ.
+  // get/claim share the task_id schema; claim owner comes only from ToolContext.identity and rejects model arguments.
   return {
     name,
     description,
@@ -291,7 +291,7 @@ function taskIdDefinition(
 }
 
 function taskToolError(error: unknown) {
-  // 已知领域错误保留稳定错误码；未知异常继续向上抛，避免吞掉程序缺陷。
+  // Known domain errors retain stable error codes; throw unknown exceptions upward to avoid swallowing bugs.
   if (error instanceof TaskError) {
     return toolError(error.code, error.message);
   }
@@ -299,7 +299,7 @@ function taskToolError(error: unknown) {
 }
 
 export function canonicalTaskId(value: string): string {
-  // 所有 ID 都先归一为 canonical UUID，外部路径字符串无法进入文件系统。
+  // Normalize all IDs to canonical UUIDs first; external path strings cannot enter the filesystem.
   if (typeof value !== "string" || !CANONICAL_UUID.test(value)) {
     throw new TaskGraphError("task id must be a canonical UUID");
   }
@@ -359,7 +359,7 @@ function isTaskStatus(value: unknown): value is TaskStatus {
 }
 
 function taskPayload(task: Task): Readonly<Record<string, unknown>> {
-  // 返回给模型的字段使用磁盘命名 blocked_by，避免 wire format 与存储格式不一致。
+  // Fields returned to the model use the disk name blocked_by to avoid inconsistency between wire format and storage format.
   return {
     blocked_by: [...task.blockedBy],
     description: task.description,

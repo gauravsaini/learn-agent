@@ -29,13 +29,13 @@ import type { ChatMessage } from "../src/core/messages.js";
 import { toolError, toolSuccess } from "../src/core/tools.js";
 import { ScriptedModelClient } from "./fakes.js";
 
-function summary(goal = "继续迁移第 8 章"): CompactionSummary {
+function summary(goal = "Continue migrating Chapter 8"): CompactionSummary {
   return new CompactionSummary({
     currentGoal: goal,
-    keyFindings: ["按消息组压缩"],
+    keyFindings: ["Compact by message groups"],
     filesReadOrChanged: ["src/features/compaction.ts"],
-    remainingWork: ["运行测试"],
-    userConstraints: ["不得拆散工具配对"],
+    remainingWork: ["Run tests"],
+    userConstraints: ["Do not break tool pairings"],
   });
 }
 
@@ -417,13 +417,13 @@ describe("final history compaction", () => {
         throw new Error("expected structured system summary");
       }
       expect(JSON.parse(compacted.content)).toEqual({
-        current_goal: "继续迁移第 8 章",
+        current_goal: "Continue migrating Chapter 8",
         files_read_or_changed: ["src/features/compaction.ts"],
-        key_findings: ["按消息组压缩"],
+        key_findings: ["Compact by message groups"],
         kind: "compacted_history",
-        remaining_work: ["运行测试"],
+        remaining_work: ["Run tests"],
         transcript_path: ".agent_tutorial/artifacts/transcript-transcript.jsonl",
-        user_constraints: ["不得拆散工具配对"],
+        user_constraints: ["Do not break tool pairings"],
       });
       const transcript = await readFile(outcome.transcript.path, "utf8");
       expect(transcript).toContain('"tool_call_id":"call-1"');

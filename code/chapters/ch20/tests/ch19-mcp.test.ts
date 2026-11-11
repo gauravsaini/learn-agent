@@ -245,8 +245,8 @@ describe("chapter 19 MCP stdio runtime", () => {
   });
 
   test("maps remote error, timeout, and process exit without leaking private details", async () => {
-    // 每个用例自带工具超时：只有 delay 需要极短超时来触发 mcp_timeout；
-    // fail 和 terminate 依赖远端错误与连接断开先到达，短超时会让 mcp_timeout 抢先命中。
+    // Each test case provides a tool timeout: only delay requires an extremely short timeout to trigger mcp_timeout;
+    // fail and terminate rely on remote errors and disconnects arriving first; short timeouts cause mcp_timeout to hit prematurely.
     const cases = [
       ["fail", {}, "mcp_remote_error", true, 2],
       ["delay", { milliseconds: 100 }, "mcp_timeout", false, 0.02],

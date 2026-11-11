@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略和 Hook 生命周期。
+// Composition root: selects infrastructure, tool sets, permission policies, and Hook lifecycles by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -12,33 +12,33 @@ import type { ChapterProfile } from "./core/profiles.js";
 import { profileForChapter } from "./core/profiles.js";
 import { createChapterOneTools, createChapterTwoTools } from "./features/builtin-tools.js";
 
-// Hook 仅在 P04 及以后组装，避免给早期教学快照注入未讲解的生命周期。
+// Hooks are assembled only in P04 and later to avoid injecting unexplained lifecycles into early tutorial snapshots.
 const SYSTEM_PROMPT =
   "You are a coding agent. Use tools when needed, inspect their results, and answer accurately.";
 
 export interface BuildDependencies {
-  // 外部边界均可注入，离线测试无需启动真实进程或网络客户端。
+  // All external boundaries are injectable; offline tests do not need to start real processes or network clients.
   readonly model: ModelClient;
-  // 命令、文件和 Hook 上下文共享的工作区根。
+  // Workspace root shared by command, file, and Hook contexts.
   readonly workspace: string;
-  // 可替换命令执行边界。
+  // Replaceable command execution boundary.
   readonly commandRunner?: CommandRunner;
-  // 可替换文件系统边界，同时用于写路径安全校验。
+  // Replaceable file system boundary, also used for write path safety validation.
   readonly fileSystem?: WorkspaceFileSystem;
-  // P03+ 的 ask 决策收敛边界。
+  // Ask decision convergence boundary for P03+.
   readonly approvalProvider?: ApprovalProvider;
-  // P03+ 的最终决策审计边界。
+  // Final decision audit boundary for P03+.
   readonly auditSink?: AuditSink;
-  // P04 可选 Hook 队列；早期 profile 明确拒绝它。
+  // Optional Hook queue for P04; earlier profiles explicitly reject it.
   readonly hooks?: HookRegistry;
-  // 可选模型回合上限。
+  // Optional model turn limit.
   readonly maxTurns?: number;
 }
 
-// 根据固定 profile 组合累计能力，拒绝 profile 伪造与 Hook 越级注入。
+// Accumulate capabilities by fixed profile, rejecting forged profiles and unauthorized hook injections.
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 先验证 profile 与章节匹配，再按能力选择工具集与权限策略，最后组装 AgentRunner。
-  // 禁止伪造同章节号但能力不同的 profile，保持教学快照固定。
+  // Validates that profile matches chapter first, selects toolset and permission policy by capability, and finally assembles AgentRunner.
+  // Forbids forging profiles with identical chapter numbers but different capabilities, keeping tutorial snapshots fixed.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
@@ -81,7 +81,7 @@ function permissionPolicyForProfile(
   if (dependencies.auditSink === undefined) {
     throw new Error("auditSink is required for chapter 3 or later");
   }
-  // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+  // Promote only write tools; default policy rules handle Shell execution approval.
   return new PermissionPolicy({
     rules: [
       new PermissionRule({

@@ -1,4 +1,4 @@
-// 固定为 P01，防止该入口意外启用后续章节能力。
+// Fixed to P01 to prevent this entrypoint from accidentally enabling capabilities from subsequent chapters.
 import { runProfile } from "../cli.js";
 import { P01 } from "../core/profiles.js";
 

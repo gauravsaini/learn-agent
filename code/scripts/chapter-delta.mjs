@@ -1,5 +1,5 @@
-// 计算相邻章节快照之间的文件差异，用于核对“每章只新增一个能力”。
-// 用法: node scripts/chapter-delta.mjs [起始章] [结束章]
+// Compute file diffs between adjacent chapter snapshots to verify that "each chapter adds only one capability".
+// Usage: node scripts/chapter-delta.mjs [start-chapter] [end-chapter]
 import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";

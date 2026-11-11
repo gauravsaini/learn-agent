@@ -1,4 +1,4 @@
-// P08 在 P07 基础上增加 artifacts 与 compaction，让组合根接入请求级压缩和结果落盘。
+// P08 adds artifacts and compaction to P07, letting composition root integrate request-level compaction and result persistence.
 export type Capability =
   | "loop"
   | "powershell"
@@ -6,13 +6,13 @@ export type Capability =
   | "files"
   | "policy"
   | "hooks"
-  // todo 表示 Agent 已具备显式计划快照与陈旧计划提醒能力。
+  // todo indicates Agent possesses explicit plan snapshots and stale plan reminder capabilities.
   | "todo"
-  // subagent 表示可将自包含工作交给隔离 AgentRunner 执行。
+  // subagent indicates delegating self-contained work to an isolated AgentRunner for execution.
   | "subagent"
-  // skills 表示可以发现 workspace 技能摘要并按名称加载受控说明。
+  // skills indicates discovering workspace Skill summaries and loading controlled instructions by name.
   | "skills"
-  // artifacts 与 compaction 共同表示大结果落盘和受预算的上下文缩减。
+  // artifacts and compaction together represent writing large results to disk and budgeted context compaction.
   | "artifacts"
   | "compaction";
 
@@ -21,7 +21,7 @@ export interface ChapterProfile {
   readonly capabilities: ReadonlySet<Capability>;
 }
 
-// 用不可导出底层 Set 的包装实现 ReadonlySet，防止 profile 能力被外部修改。
+// Implement ReadonlySet using a wrapper that hides the underlying Set to prevent external modification of profile capabilities.
 class CapabilitySet implements ReadonlySet<Capability> {
   readonly #values: Set<Capability>;
 
@@ -78,7 +78,7 @@ export const P03: ChapterProfile = Object.freeze({
   capabilities: new CapabilitySet(["loop", "powershell", "tool_registry", "files", "policy"]),
 });
 
-// P04 在 P03 基础上加入 hooks，允许受限 Hook 生命周期扩展。
+// P04 adds hooks to P03, allowing restricted Hook lifecycle extensions.
 export const P04: ChapterProfile = Object.freeze({
   chapter: 4,
   capabilities: new CapabilitySet([
@@ -91,7 +91,7 @@ export const P04: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P05 在 P04 基础上加入 todo，用于会话级计划快照与陈旧提醒。
+// P05 adds todo to P04 for session-level plan snapshots and stale reminders.
 export const P05: ChapterProfile = Object.freeze({
   chapter: 5,
   capabilities: new CapabilitySet([
@@ -105,7 +105,7 @@ export const P05: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P06 在 P05 基础上加入 subagent，用于隔离委派并复用父级审批边界。
+// P06 adds subagent to P05 to isolate delegation and reuse parent approval boundaries.
 export const P06: ChapterProfile = Object.freeze({
   chapter: 6,
   capabilities: new CapabilitySet([
@@ -135,7 +135,7 @@ export const P07: ChapterProfile = Object.freeze({
   ]),
 });
 
-// artifacts 与 compaction 都由同一 CompactionManager 服务，能力位保证 profile 可显式声明。
+// CompactionManager serves both artifacts and compaction; capability flags ensure profiles can declare them explicitly.
 export const P08: ChapterProfile = Object.freeze({
   chapter: 8,
   capabilities: new CapabilitySet([
@@ -153,7 +153,7 @@ export const P08: ChapterProfile = Object.freeze({
   ]),
 });
 
-// 仅返回模块内冻结的单例，供组合根用引用相等性校验 profile 来源。
+// Returns only the frozen singleton in the module, so the composition root can verify profile origin by reference equality.
 export function profileForChapter(chapter: number): ChapterProfile {
   if (chapter === 1) {
     return P01;

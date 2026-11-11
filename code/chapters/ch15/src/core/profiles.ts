@@ -1,4 +1,4 @@
-// 章节能力清单：每个 profile 都是冻结单例，组合根据此决定启用的运行时边界。
+// Chapter capability list: each profile is a frozen singleton; the composition root determines enabled runtime boundaries from it.
 export type Capability =
   | "loop"
   | "powershell"
@@ -7,26 +7,26 @@ export type Capability =
   | "policy"
   | "hooks"
   | "todo"
-  // subagent 表示可将自包含工作交给隔离 AgentRunner 执行。
+  // subagent indicates delegating self-contained work to an isolated AgentRunner for execution.
   | "subagent"
-  // skills 表示可以发现 workspace 技能摘要并按名称加载受控说明。
+  // skills indicates discovering workspace Skill summaries and loading controlled instructions by name.
   | "skills"
-  // artifacts 与 compaction 共同表示大结果落盘和受预算的上下文缩减。
+  // artifacts and compaction together represent writing large results to disk and budgeted context compaction.
   | "artifacts"
   | "compaction"
-  // memory 表示回合可检索、提取并持久化工作区级记忆。
+  // memory indicates turns can retrieve, extract, and persist workspace-level memories.
   | "memory"
-  // dynamic_prompt 表示系统提示由运行时状态渲染，而非固定字符串。
+  // dynamic_prompt indicates runtime state renders system prompts instead of fixed strings.
   | "dynamic_prompt"
-  // recovery 表示模型请求具备统一 deadline、退避、fallback 和长度恢复。
+  // recovery indicates model requests possess unified deadlines, backoff, fallback, and length recovery.
   | "recovery"
-  // task_dag_json 表示任务依赖图由注入的 JSON TaskStore 持久化。
+  // task_dag_json indicates task dependency graphs are persisted by injected JSON TaskStores.
   | "task_dag_json"
-  // background 表示可启动受控后台作业并通过事件队列回传终态。
+  // background indicates starting controlled background tasks and returning final state through the event queue.
   | "background"
-  // cron 表示可持久化五字段 Cron 计划并由后台 worker 轮询触发。
+  // cron indicates persisting five-field Cron schedules and triggering via background worker polling.
   | "cron"
-  // teammate 与 mailbox 共同启用身份隔离的协作 Agent 和持久异步通信。
+  // teammate and mailbox together enable identity-isolated collaborating Agents and persistent asynchronous communication.
   | "teammate"
   | "mailbox";
 
@@ -35,7 +35,7 @@ export interface ChapterProfile {
   readonly capabilities: ReadonlySet<Capability>;
 }
 
-// 用不可导出底层 Set 的包装实现 ReadonlySet，防止 profile 能力被外部修改。
+// Implement ReadonlySet using a wrapper that hides the underlying Set to prevent external modification of profile capabilities.
 class CapabilitySet implements ReadonlySet<Capability> {
   readonly #values: Set<Capability>;
 
@@ -92,7 +92,7 @@ export const P03: ChapterProfile = Object.freeze({
   capabilities: new CapabilitySet(["loop", "powershell", "tool_registry", "files", "policy"]),
 });
 
-// P04 在 P03 基础上加入 hooks，允许受限 Hook 生命周期扩展。
+// P04 adds hooks to P03, allowing restricted Hook lifecycle extensions.
 export const P04: ChapterProfile = Object.freeze({
   chapter: 4,
   capabilities: new CapabilitySet([
@@ -105,7 +105,7 @@ export const P04: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P05 在 P04 基础上加入 todo，用于会话级计划快照与陈旧提醒。
+// P05 adds todo to P04 for session-level plan snapshots and stale reminders.
 export const P05: ChapterProfile = Object.freeze({
   chapter: 5,
   capabilities: new CapabilitySet([
@@ -119,7 +119,7 @@ export const P05: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P06 在 P05 基础上加入 subagent，用于隔离委派并复用父级审批边界。
+// P06 adds subagent to P05 to isolate delegation and reuse parent approval boundaries.
 export const P06: ChapterProfile = Object.freeze({
   chapter: 6,
   capabilities: new CapabilitySet([
@@ -134,7 +134,7 @@ export const P06: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P07 在 P06 基础上增加 skills 能力，让组合根按需扫描并注册知识加载工具。
+// P07 adds skills capability to P06, letting composition root scan on demand and register knowledge loading tools.
 export const P07: ChapterProfile = Object.freeze({
   chapter: 7,
   capabilities: new CapabilitySet([
@@ -150,7 +150,7 @@ export const P07: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P08 在 P07 基础上增加 artifacts 与 compaction，让组合根接入请求级压缩和结果落盘。
+// P08 adds artifacts and compaction to P07, letting composition root integrate request-level compaction and result persistence.
 export const P08: ChapterProfile = Object.freeze({
   chapter: 8,
   capabilities: new CapabilitySet([
@@ -168,7 +168,7 @@ export const P08: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P09 在 P08 能力上追加 memory，使同一 Loop 同时拥有请求级压缩与跨会话文件记忆。
+// P09 appends memory to P08 capabilities so the same Loop has both request-level compaction and cross-session file memory.
 export const P09: ChapterProfile = Object.freeze({
   chapter: 9,
   capabilities: new CapabilitySet([
@@ -187,7 +187,7 @@ export const P09: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P10 在 P09 能力上追加 dynamic_prompt，让组合根切换到运行时渲染系统提示。
+// P10 appends dynamic_prompt to P09 capabilities, letting composition root switch to runtime system prompt rendering.
 export const P10: ChapterProfile = Object.freeze({
   chapter: 10,
   capabilities: new CapabilitySet([
@@ -207,7 +207,7 @@ export const P10: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P11 在 P10 能力上追加 recovery，模型请求由 RecoveryManager 接管。
+// P11 appends recovery to P10 capabilities; RecoveryManager takes over model requests.
 export const P11: ChapterProfile = Object.freeze({
   chapter: 11,
   capabilities: new CapabilitySet([
@@ -228,31 +228,31 @@ export const P11: ChapterProfile = Object.freeze({
   ]),
 });
 
-// P12 在 P11 能力上追加 task_dag_json，由 JSON TaskStore 提供持久化任务依赖图。
+// P12 appends task_dag_json to P11 capabilities; JSON TaskStore provides persistent task dependency graphs.
 export const P12: ChapterProfile = Object.freeze({
   chapter: 12,
   capabilities: new CapabilitySet([...P11.capabilities, "task_dag_json"]),
 });
 
-// P13 在 P12 能力上追加 background，由 EventInbox 回传后台作业终态。
+// P13 appends background to P12 capabilities; EventInbox returns background job terminal states.
 export const P13: ChapterProfile = Object.freeze({
   chapter: 13,
   capabilities: new CapabilitySet([...P12.capabilities, "background"]),
 });
 
-// P14 在 P13 能力上追加 cron，由持久 Cron 计划触发上下文事件回合。
+// P14 appends cron to P13 capabilities; persistent Cron schedules trigger context event turns.
 export const P14: ChapterProfile = Object.freeze({
   chapter: 14,
   capabilities: new CapabilitySet([...P13.capabilities, "cron"]),
 });
 
-// P15 在 P14 能力上追加 teammate 与 mailbox，让 Lead 与持久队友通过共享事件和邮箱协作。
+// P15 appends teammate and mailbox to P14 capabilities, letting Lead and persistent teammates collaborate through shared events and mailboxes.
 export const P15: ChapterProfile = Object.freeze({
   chapter: 15,
   capabilities: new CapabilitySet([...P14.capabilities, "teammate", "mailbox"]),
 });
 
-// 仅返回模块内冻结的单例，供组合根用引用相等性校验 profile 来源。
+// Returns only the frozen singleton in the module, so the composition root can verify profile origin by reference equality.
 export function profileForChapter(chapter: number): ChapterProfile {
   if (chapter === 1) {
     return P01;

@@ -1,5 +1,5 @@
-// P04 将 hooks 加入章节能力集，允许在固定生命周期点执行受限扩展。
-// 章节能力快照：每章一个冻结单例，组合根用引用相等校验 profile 来源。
+// P04 adds hooks to chapter capability sets, allowing restricted extensions at fixed lifecycle points.
+// Chapter capability snapshot: one frozen singleton per chapter; the composition root validates profile provenance with reference equality.
 export type Capability = "loop" | "powershell" | "tool_registry" | "files" | "policy" | "hooks";
 
 export interface ChapterProfile {
@@ -8,7 +8,7 @@ export interface ChapterProfile {
 }
 
 class CapabilitySet implements ReadonlySet<Capability> {
-  // 用不可导出底层 Set 的包装实现 ReadonlySet，防止 profile 能力被外部修改。
+  // Implement ReadonlySet using a wrapper that hides the underlying Set to prevent external modification of profile capabilities.
   readonly #values: Set<Capability>;
 
   constructor(values: readonly Capability[]) {
@@ -77,7 +77,7 @@ export const P04: ChapterProfile = Object.freeze({
 });
 
 export function profileForChapter(chapter: number): ChapterProfile {
-  // 仅返回模块内冻结的单例，供组合根用引用相等性校验 profile 来源。
+  // Returns only the frozen singleton in the module, so the composition root can verify profile origin by reference equality.
   if (chapter === 1) {
     return P01;
   }

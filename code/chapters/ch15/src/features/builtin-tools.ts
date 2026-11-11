@@ -13,27 +13,27 @@ import type { WorkspaceFileSystem } from "../core/filesystem.js";
 import type { ToolDefinition } from "../core/tools.js";
 import { ToolRegistry, toolError, toolSuccess } from "../core/tools.js";
 
-// 严格对象拒绝多余字段，确保工具契约与模型看到的 JSON Schema 一致。
+// Strict object rejects extraneous fields, ensuring tool contracts match the JSON Schema seen by the model.
 const shellInputSchema = z.strictObject({ command: z.string().min(1) });
-// P13 主 Agent 的 shell 才增加 run_in_background 三态参数；其余章节和 subagent 仍使用单字段 schema。
+// Only the shell of the main Agent in P13 adds the tri-state parameter run_in_background; other chapters and subagents use single-field schema.
 const backgroundShellInputSchema = z.strictObject({
   command: z.string().min(1),
   run_in_background: z.boolean().nullable().optional().default(null),
 });
 
 export interface BackgroundShellInput {
-  // 交给 PowerShellRunner 的原始命令文本。
+  // Raw command text passed to PowerShellRunner.
   readonly command: string;
-  // true/false 显式决定调度方式；null 或缺失时允许关键词启发式判断。
+  // true/false determines scheduling explicitly; allow keyword heuristics when null or omitted.
   readonly run_in_background?: boolean | null;
 }
 
-// background 开关显式转后台；省略时由 Dispatcher 用关键词启发式判断。
+// The background switch moves execution to background explicitly; when omitted, Dispatcher uses keyword heuristics.
 export function createShellTool(
   commandRunner: CommandRunner,
   background = false,
 ): ToolDefinition<{ command: string; run_in_background?: boolean | null }> {
-  // background 标记让 Dispatcher 可选择后台提交；同步章节仍按原样直接执行。
+  // The background flag lets Dispatcher choose background submission; synchronous chapters still execute directly.
   return {
     name: "shell",
     description: "Run a PowerShell command in the current workspace.",
@@ -48,7 +48,7 @@ export function createShellTool(
         return toolError("shell_start_failed", "PowerShell process could not be started");
       }
 
-      // 保留有限输出和超时状态，模型可据此决定是否调整命令。
+      // Preserves bounded output and timeout state so the model can decide whether to adjust commands.
       let output = result.output.length === 0 ? "(no output)" : result.output;
       if (result.truncated) {
         output = `${output}\n[output truncated]`;
@@ -67,7 +67,7 @@ export function createShellTool(
   };
 }
 
-// 第 1 章只有 shell 工具；background 开关由 P13 组合根显式传入。
+// Chapter 1 has only shell tools; the background flag is passed explicitly by the P13 composition root.
 export function createChapterOneTools(
   commandRunner: CommandRunner,
   background = false,
@@ -221,7 +221,7 @@ export function createChapterTwoTools(
   fileSystem: WorkspaceFileSystem,
   background = false,
 ): ToolRegistry {
-  // 第 2 至第 13 章复用同一文件工具集；后台只影响 shell 调度，不改变文件工具行为。
+  // Chapters 2 through 13 reuse the same file tool set; background only affects shell scheduling, not file tool behavior.
   const registry = createChapterOneTools(commandRunner, background);
   registry.register(createReadFileTool(fileSystem));
   registry.register(createWriteFileTool(fileSystem));

@@ -105,7 +105,7 @@ describe("chapter 2 file tools", () => {
           ]),
           finishReason: "tool_calls",
         },
-        { message: assistantMessage("完成。"), finishReason: "stop" },
+        { message: assistantMessage("Complete."), finishReason: "stop" },
       ];
       const model = new ScriptedModelClient(replies);
       const runner = buildAgent(P02, {
@@ -114,7 +114,7 @@ describe("chapter 2 file tools", () => {
         commandRunner: new FakeCommandRunner(commandResult("unused")),
       });
 
-      const result = await runner.run("写入并读取 note.txt");
+      const result = await runner.run("Write and read note.txt");
 
       expect(model.requests[0]?.tools.map((tool) => tool.function.name)).toEqual([
         "shell",

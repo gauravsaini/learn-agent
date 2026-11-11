@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook、TODO、Skill、后台/Cron/队友/协议运行时；P18 追加 Worktree 与 ToolContextProvider，P19 追加 MCP runtime。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, TODO, Skills, background/Cron/teammate/protocol runtimes by chapter capabilities; P18 appends Worktree and ToolContextProvider, and P19 appends MCP runtime.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -48,7 +48,7 @@ const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// P19 通过组装根注入 MCP 运行时，确保动态发布和进程关闭属于同一资源生命周期。
+// Composition root injects MCP runtime in P19 to ensure dynamic publishing and process shutdown belong to the same resource lifecycle.
 export interface BuildDependencies {
   readonly model: ModelClient;
   readonly workspace: string;
@@ -63,7 +63,7 @@ export interface BuildDependencies {
   readonly taskStore?: TaskStore;
   readonly workStealingRuntime?: WorkStealingRuntime;
   readonly worktreeRuntime?: WorktreeRuntime;
-  // MCP runtime 由组装根注入，避免 CLI/测试各自维护一套连接生命周期。
+  // MCP runtime is injected by composition root so CLI/tests avoid maintaining separate connection lifecycles.
   readonly mcpRuntime?: McpRuntime;
   readonly backgroundSupervisor?: JobSupervisor;
   readonly cronRuntime?: CronRuntime;
@@ -105,14 +105,14 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     throw new Error("workStealingRuntime requires chapter 17 or later");
   }
   if (profile.capabilities.has("worktree") && dependencies.worktreeRuntime === undefined) {
-    // P18 强制 worktreeRuntime 与 workStealingRuntime 共享同一 SQLite store，
-    // 并让 WorktreeRuntime 同时充当 TaskClaimService，确保所有认领路径一致。
+    // P18 enforces that worktreeRuntime and workStealingRuntime share the same SQLite store,
+    // Have WorktreeRuntime act simultaneously as TaskClaimService to ensure all claim paths remain consistent.
     throw new Error("worktreeRuntime is required for chapter 18 or later");
   }
   if (!profile.capabilities.has("worktree") && dependencies.worktreeRuntime !== undefined) {
     throw new Error("worktreeRuntime requires chapter 18 or later");
   }
-  // 能力与依赖必须成对出现，低章 profile 不能误装 MCP 管理工具。
+  // Capabilities and dependencies must appear in pairs; early chapter profiles cannot install MCP management tools by mistake.
   if (profile.capabilities.has("mcp") && dependencies.mcpRuntime === undefined) {
     throw new Error("mcpRuntime is required for chapter 19 or later");
   }
@@ -125,8 +125,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       dependencies.workStealingRuntime.store !== dependencies.worktreeRuntime.store ||
       dependencies.workStealingRuntime.claimService !== dependencies.worktreeRuntime)
   ) {
-    // WorktreeRuntime 同时实现 TaskClaimService 与 ToolContextProvider，
-    // 因此必须与 WorkStealingRuntime 指向同一 SQLite store，避免认领和工具上下文分叉。
+    // WorktreeRuntime implements both TaskClaimService and ToolContextProvider,
+    // Therefore must point to the same SQLite store as WorkStealingRuntime to prevent forks in claims and tool contexts.
     throw new Error(
       "worktreeRuntime must be the WorkStealingRuntime claim service and share its store",
     );
@@ -268,7 +268,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     registerTaskTools(tools, dependencies.taskStore);
   }
   if (dependencies.workStealingRuntime !== undefined) {
-    // Lead 注册全部任务工具，包括 create_task；Teammate 在 factory 内注册无 create_task 的版本。
+    // Lead registers all task tools including create_task; Teammate registers the version without create_task inside factory.
     registerLeasedTaskTools(
       tools,
       dependencies.workStealingRuntime.store,
@@ -276,7 +276,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     );
   }
   if (dependencies.backgroundSupervisor !== undefined) {
-    // 主 Agent 注册后台查询与取消工具；子 Agent 不接收后台 Supervisor，因此不暴露这些能力。
+    // Primary Agent registers background query and cancellation tools; subagents receive no background Supervisor, so do not expose these capabilities.
     registerBackgroundJobTools(tools, dependencies.backgroundSupervisor);
   }
   if (dependencies.worktreeRuntime !== undefined) {
@@ -289,12 +289,12 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     tools.register(dependencies.teammateRuntime.spawnToolDefinition);
     tools.register(dependencies.teammateRuntime.sendToolDefinition);
     if (dependencies.protocolRuntime !== undefined) {
-      // Lead 获得 request_shutdown/review_plan；submit_plan 只注册给队友 factory。
+      // Lead receives request_shutdown/review_plan; submit_plan registers only to teammate factory.
       const [requestShutdownTool, reviewPlanTool] =
         dependencies.protocolRuntime.leadToolDefinitions;
       tools.register(requestShutdownTool);
       tools.register(reviewPlanTool);
-      // configureProtocol 校验共享依赖，确保协议消息能路由回同一个 MailboxStore。
+      // configureProtocol validates shared dependencies to ensure protocol messages route back to the same MailboxStore.
       dependencies.teammateRuntime.configureProtocol(dependencies.protocolRuntime);
     }
     if (dependencies.workStealingRuntime !== undefined) {
@@ -302,15 +302,15 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     }
     const teammateRuntime = dependencies.teammateRuntime;
     teammateRuntime.configureRunnerFactory((name, role, sendDefinition) => {
-      // 持续 Teammate 工厂只注册 shell/read/write、消息与有限任务工具，不暴露 create_task。
+      // The persistent Teammate factory only registers shell/read/write, message, and limited task tools; it does not expose create_task.
       const teammateTools = standardTools.tools.subset(["shell", "read_file", "write_file"]);
       teammateTools.register(sendDefinition);
       if (dependencies.protocolRuntime !== undefined) {
-        // 队友只多一个 submit_plan，不能获得 Lead 审批/关机工具。
+        // Teammates only have one extra submit_plan, and cannot obtain Lead approval or shutdown tools.
         teammateTools.register(dependencies.protocolRuntime.submitPlanToolDefinition);
       }
       if (dependencies.workStealingRuntime !== undefined) {
-        // 持续 Teammate 工具集：shell、read_file、write_file + submit_plan + worker 任务工具。
+        // Persistent Teammate tool set: shell, read_file, write_file + submit_plan + worker task tools.
         registerTeammateLeasedTaskTools(
           teammateTools,
           dependencies.workStealingRuntime.store,
@@ -351,8 +351,8 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     });
   }
   if (dependencies.mcpRuntime !== undefined) {
-    // 只安装到 Lead registry；Subagent/Teammate factory 不持有 McpRuntime，
-    // 远程工具因此不会经子执行者路径隐式传播。
+    // Install only to the Lead registry; Subagent/Teammate factories do not hold McpRuntime,
+    // Remote tools therefore do not propagate implicitly through sub-executor paths.
     dependencies.mcpRuntime.install(tools);
   }
   const toolDispatcher: ToolDispatcher | undefined =
@@ -378,7 +378,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     : undefined;
   const eventPump =
     dependencies.teammateRuntime ?? dependencies.cronRuntime ?? dependencies.backgroundSupervisor;
-  // resources 交给 AgentRunner 在 close 时反向关闭，MCP runtime 与后台资源同生命周期。
+  // Pass resources to AgentRunner for reverse cleanup on close; MCP runtime shares lifecycle with background resources.
   const resources: readonly AsyncResource[] = Object.freeze([
     ...(dependencies.backgroundSupervisor === undefined ? [] : [dependencies.backgroundSupervisor]),
     ...(dependencies.cronRuntime === undefined ? [] : [dependencies.cronRuntime]),
@@ -479,7 +479,7 @@ function permissionPolicyForProfile(
     }),
   ];
   if (profile.capabilities.has("mcp")) {
-    // MCP 管理工具与远程 external 工具需要终端审批，规则只读取 source 与 effect。
+    // MCP management tools and remote external tools require terminal approval; rules read only source and effect.
     rules.push(
       new PermissionRule({
         name: "mcp-external-approval",

@@ -4,17 +4,17 @@ import type { ToolCall } from "./messages.js";
 import { toolCall } from "./messages.js";
 import type { OpenAIToolSchema } from "./model.js";
 
-// effect 是权限策略和工具列表可见性的最小事实来源，不依赖工具名称猜测。
+// effect is the minimal source of truth for permission policies and tool list visibility, without guessing from tool names.
 export type EffectClass = "read" | "write" | "execute" | "external";
-// concurrency 是 Dispatcher 判断工具能否转后台执行的显式契约，缺省为 inline。
+// concurrency is the explicit contract for Dispatcher to decide if a tool can run in the background; defaults to inline.
 export type ConcurrencyClass = "inline" | "background_eligible";
 
 export interface ToolContext {
-  // 所有文件和命令副作用的根边界。
+  // Root boundary for all file and command side effects.
   readonly workspace: string;
-  // 当前调用主体，用于任务 owner 和审计归属。
+  // Current invocation subject, used for task owner and audit attribution.
   readonly identity: string;
-  // 可选幂等键，供异步或外部执行边界消除重复提交。
+  // Optional idempotency key for async or external execution boundaries to eliminate duplicate submissions.
   readonly idempotencyKey?: string;
 }
 
@@ -24,12 +24,12 @@ export interface ToolResult {
   readonly errorCode?: string;
 }
 
-// 成功和失败都返回不可变 ToolResult；错误必须携带稳定错误码。
+// Return immutable ToolResults on both success and failure; errors must carry stable error codes.
 export function toolSuccess(content: string): ToolResult {
   return Object.freeze({ content, isError: false });
 }
 
-// 失败结果必须提供稳定 errorCode，便于模型、Hook 和存储层分类处理。
+// Failed results must provide stable errorCodes to facilitate classified handling by model, Hook, and storage layers.
 export function toolError(errorCode: string, message: string): ToolResult {
   if (errorCode.trim().length === 0) {
     throw new Error("tool error code must not be empty");
@@ -41,7 +41,7 @@ export function toolError(errorCode: string, message: string): ToolResult {
   });
 }
 
-// 任何进入 canonical history 的工具结果都深拷贝，防止 handler 内部可变对象污染会话。
+// Deep-copies any tool result entering canonical history to prevent mutable objects inside handlers from polluting the session.
 export function copyToolResult(result: ToolResult): ToolResult {
   if (!isToolResult(result)) {
     throw new Error("tool result must satisfy the ToolResult contract");
@@ -61,18 +61,18 @@ export interface ToolDefinition<Input> {
   readonly description: string;
   readonly inputSchema: z.ZodType<Input>;
   readonly effect: EffectClass;
-  // 声明工具只能同步执行，还是允许 Dispatcher 转为后台作业。
+  // Declare whether tools can execute only synchronously or Dispatcher can convert them to background jobs.
   readonly concurrency?: ConcurrencyClass;
   readonly handler: (input: Input, context: ToolContext) => Promise<ToolResult> | ToolResult;
 }
 
-// StoredToolDefinition 隐藏泛型 Input，统一把 schema 校验放在 invoke 边界。
+// StoredToolDefinition hides generic Input, placing schema validation uniformly at the invoke boundary.
 export interface StoredToolDefinition {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: z.ZodType<unknown>;
   readonly effect: EffectClass;
-  // 注册时把缺省值归一为 inline，运行期不再推断并发语义。
+  // Normalize default values to inline at registration; runtime no longer infers concurrency semantics.
   readonly concurrency: ConcurrencyClass;
   readonly invoke: (input: unknown, context: ToolContext) => Promise<ToolResult>;
 }
@@ -109,7 +109,7 @@ export class ToolRegistry {
     return Object.freeze([...this.#definitions.keys()]);
   }
 
-  // 注册时立即冻结定义；运行期 prepare() 只允许解析、校验和深拷贝输入。
+  // Freeze definitions immediately at registration; runtime prepare() only parses, validates, and deep-copies inputs.
   register<Input>(definition: ToolDefinition<Input>): void {
     if (!this.#mutable) {
       throw new Error("tool registry snapshot is immutable");
@@ -129,7 +129,7 @@ export class ToolRegistry {
       description: definition.description,
       inputSchema: definition.inputSchema,
       effect: definition.effect,
-      // 未声明的工具保持同步执行，避免后台能力静默扩散。
+      // Undeclared tools execute synchronously to prevent silent diffusion of background capabilities.
       concurrency: definition.concurrency === undefined ? "inline" : definition.concurrency,
       invoke: async (input: unknown, context: ToolContext) =>
         definition.handler(definition.inputSchema.parse(input), context),
@@ -137,12 +137,12 @@ export class ToolRegistry {
     this.#definitions.set(definition.name, stored);
   }
 
-  // snapshot 用于给子 Agent 等边界提供只读工具视图，不能继续注册新工具。
+  // snapshot provides read-only tool views to boundaries like subagents, disallowing further tool registrations.
   snapshot(): ToolRegistry {
     return new ToolRegistry(this.#definitions, false);
   }
 
-  // 模型侧 schema 与运行时 handler 同源，避免平行定义漂移。
+  // Model-side schema and runtime handler share the same source to avoid parallel definition drift.
   openAITools(): readonly OpenAIToolSchema[] {
     return Object.freeze(
       [...this.#definitions.values()].map((definition) => ({
@@ -156,7 +156,7 @@ export class ToolRegistry {
     );
   }
 
-  // 参数是不可信输入：先解析 JSON，再按 schema 校验，最后冻结完整调用快照。
+  // Arguments are untrusted input: parse JSON first, validate against schema, and freeze a complete call snapshot.
   prepare(call: ToolCall): PreparedToolCall {
     const definition = this.#definitions.get(call.name);
     if (definition === undefined) {
@@ -167,7 +167,7 @@ export class ToolRegistry {
     try {
       raw = JSON.parse(call.arguments);
     } catch {
-      // 工具故障转成可回填消息，循环可继续让模型决定下一步。
+      // Convert tool faults into backfillable messages, allowing the loop to continue and let the model decide the next step.
       return {
         call,
         definition,
@@ -190,11 +190,11 @@ export class ToolRegistry {
         error: toolError("invalid_arguments", "Tool arguments failed schema validation"),
       };
     }
-    // Pre Hook 只能通过 updatedInput 显式改写，不能就地修改受信任的准备结果。
+    // Pre Hook can only rewrite explicitly via updatedInput; it cannot mutate trusted prepared results in place.
     return freezePreparedToolCall(call, definition, parsed.data);
   }
 
-  // handler 异常统一归一为 tool_execution_error，不让内部错误文本直接进入模型上下文。
+  // handler exceptions normalize to tool_execution_error, preventing internal error text from entering model context directly.
   async invoke(prepared: PreparedToolCall, context: ToolContext): Promise<ToolResult> {
     if (prepared.error !== undefined) {
       return prepared.error;
@@ -228,7 +228,7 @@ function freezeInput<Input>(value: Input, seen: WeakSet<object> = new WeakSet())
   return Object.freeze(value);
 }
 
-// handler 返回值同样属于不可信边界，阻止畸形对象污染会话历史。
+// handler return values also belong to untrusted boundaries, preventing malformed objects polluting session history.
 export function isToolResult(value: unknown): value is ToolResult {
   if (typeof value !== "object" || value === null) {
     return false;

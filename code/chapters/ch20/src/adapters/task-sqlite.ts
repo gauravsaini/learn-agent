@@ -40,16 +40,16 @@ const LOCK_UPDATE_MS = 10_000;
 const LOCK_RETRY_MS = 10;
 const MAX_WINDOWS_LOCK_RACE_RETRIES = 100;
 const DATABASE_FILE = "tasks.sqlite3";
-// 同一进程内按数据库路径串行化操作，跨进程由 proper-lockfile 文件锁协作。
+// Serialize operations by database path in the same process; cross-process coordination uses proper-lockfile file locks.
 const PROCESS_LOCK_TAILS = new Map<string, Promise<void>>();
 let sqlPromise: Promise<SqlJsStatic> | undefined;
 
-// SqliteTaskStore 依赖可注入时钟，便于测试租约过期等时间边界。
+// SqliteTaskStore depends on an injectable clock to test time boundaries such as lease expiration.
 export interface SqliteClock {
   now(): Date;
 }
 
-// 选项允许测试替换 id、claim token、时钟和租约时长，生产环境使用随机 UUID 与默认 60 秒租约。
+// Options allow tests to replace id, claim token, clock, and lease duration; production environments use random UUIDs and default 60-second leases.
 export interface SqliteTaskStoreOptions {
   readonly idGenerator?: () => string;
   readonly claimTokenGenerator?: () => string;
@@ -57,7 +57,7 @@ export interface SqliteTaskStoreOptions {
   readonly leaseDurationMs?: number;
 }
 
-// 所有路径都限制在真实 workspace 内，避免符号链接或相对路径逃逸。
+// All paths are restricted within the real workspace to prevent symlink or relative path escapes.
 interface SqlitePaths {
   readonly workspace: string;
   readonly root: string;
@@ -65,13 +65,13 @@ interface SqlitePaths {
   readonly lock: string;
 }
 
-// 每次事务从 SQLite 重新构建任务图，保证依赖顺序和约束判断使用同一份快照。
+// Each transaction reconstructs the task graph from SQLite to ensure dependency order and constraints use the same snapshot.
 interface TaskGraph {
   readonly tasks: ReadonlyMap<string, Task>;
   readonly order: readonly string[];
 }
 
-// SQLite 在同一原子存储中保留任务租约、worktree 绑定及不可变事件审计记录。
+// SQLite retains task leases, worktree bindings, and immutable event audit records in the same atomic store.
 export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
   readonly #workspaceInput: string;
   readonly #idGenerator: () => string;
@@ -108,12 +108,12 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     this.#leaseDurationMs = leaseDurationMs;
   }
 
-  // SQLite 数据文件固定在 workspace/.agent_tutorial 下，锁文件与数据库同目录。
+  // SQLite data file is fixed under workspace/.agent_tutorial; lock file resides in the same directory as database.
   get databasePath(): string {
     return resolve(this.#workspaceInput, ".agent_tutorial", DATABASE_FILE);
   }
 
-  // 创建任务时同时写入依赖边；重复 id 或缺失依赖在事务中直接失败。
+  // Writes dependency edges when creating tasks; duplicate IDs or missing dependencies fail directly within transaction.
   async createTask(input: CreateTaskInput): Promise<Task> {
     const id = this.#nextId();
     const dependencies = normalizeDependencies(
@@ -158,7 +158,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 读取前先释放过期租约，保证调用方看到的是有效任务状态。
+  // Release expired leases before reading to ensure callers see valid task state.
   async getTask(taskId: string): Promise<Task> {
     const id = normalizeLookupId(taskId);
     return await this.#transaction(true, (database) => {
@@ -168,7 +168,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 按创建顺序返回冻结任务列表，与 work stealing 的扫描顺序一致。
+  // Return a frozen task list in creation order, matching the scan order of work stealing.
   async listTasks(): Promise<readonly Task[]> {
     return await this.#transaction(true, (database) => {
       releaseExpired(database, this.#now());
@@ -184,8 +184,8 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
   }
 
   async reserveWorktree(binding: WorktreeBinding): Promise<WorktreeBinding> {
-    // binding 写入和 reserve 审计事件放在同一个 BEGIN IMMEDIATE 事务中；
-    // 若事件写入失败，绑定状态一起回滚，不会出现“已预留但无审计”的中间态。
+    // binding write and reserve audit events stay in the same BEGIN IMMEDIATE transaction;
+    // If event writing fails, rollback binding state together to prevent an intermediate state of "reserved without audit".
     if (!(binding instanceof WorktreeBinding)) {
       throw new TypeError("binding must be a WorktreeBinding");
     }
@@ -223,7 +223,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 从 reserved 到 active 表示工作树实际创建完成，后续自动认领才能使用该绑定。
+  // Transition from reserved to active indicates worktree creation finished; subsequent automatic claims can then use this binding.
   async activateWorktree(
     taskId: string,
     options: { readonly branchTip: string; readonly occurredAtUtc: Date },
@@ -239,7 +239,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 任务完成后保留工作树，用于继续集成或后续审计。
+  // Retains worktree after task completion for further integration or subsequent audit.
   async keepWorktree(
     taskId: string,
     options: { readonly branchTip: string; readonly occurredAtUtc: Date },
@@ -255,7 +255,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 结果需要人工复核时保留 review_reason，并只允许从 active 进入。
+  // Retain review_reason when results require manual review, and permit transitions only from active.
   async markWorktreeNeedsReview(
     taskId: string,
     options: {
@@ -275,7 +275,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 已保留或需复核的工作树可最终移除；binding 仍留在数据库作为审计记录。
+  // Reserved worktrees or worktrees that need review can eventually be removed; bindings remain in the database as audit records.
   async markWorktreeRemoved(
     taskId: string,
     options: { readonly branchTip: string; readonly occurredAtUtc: Date },
@@ -291,13 +291,13 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 读取 binding 使用与任务相同的规范化 id，避免大小写/格式差异绕过约束。
+  // Reading binding uses the same normalized id as the task to avoid casing/format discrepancies bypassing constraints.
   async getWorktreeBinding(taskId: string): Promise<WorktreeBinding> {
     const id = normalizeLookupId(taskId);
     return await this.#transaction(true, (database) => loadWorktreeBinding(database, id));
   }
 
-  // 事件表为 append-only，按 sequence 升序返回完整审计链。
+  // Event table is append-only, returning the full audit chain in ascending sequence order.
   async listWorktreeEvents(): Promise<readonly WorktreeEvent[]> {
     return await this.#transaction(true, (database) =>
       Object.freeze(
@@ -309,7 +309,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     );
   }
 
-  // 手动 claim 与自动 claim 共用 #claim，确保租约和 token 生成规则一致。
+  // Manual claims and automatic claims share #claim to ensure consistent lease and token generation rules.
   async claimTask(taskId: string, owner: string): Promise<TaskClaim> {
     const id = normalizeLookupId(taskId);
     const normalizedOwner = normalizeOwner(owner);
@@ -322,7 +322,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 按任务创建顺序取第一个 ready 任务；依赖未完成的任务跳过。
+  // Take the first ready task in task creation order. Skip tasks with incomplete dependencies.
   async claimNext(owner: string): Promise<TaskClaim | undefined> {
     const normalizedOwner = normalizeOwner(owner);
     return await this.#transaction(true, (database) => {
@@ -346,8 +346,8 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
   }
 
   async claimNextBound(owner: string): Promise<TaskClaim | undefined> {
-    // 只从已 active 的 worktree_bindings 中选择 ready task，
-    // 确保自动认领与手动 claim 遵守相同的 Worktree 隔离前提。
+    // Select ready tasks only from active worktree_bindings,
+    // Ensure automatic claims and manual claims obey the same Worktree isolation prerequisite.
     const normalizedOwner = normalizeOwner(owner);
     return await this.#transaction(true, (database) => {
       const now = this.#now();
@@ -375,8 +375,8 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
   }
 
   async lookupClaim(claimToken: string): Promise<TaskClaim | undefined> {
-    // 先查 task_claim_tokens 判断 token 是否曾经生成过；再查 tasks 是否仍持有 in_progress 租约。
-    // 已知 token 但租约已消失是契约错误，必须显式失败，不能静默返回 undefined。
+    // Queries task_claim_tokens first to check if token was ever generated; then queries tasks to check if it still holds in_progress lease.
+    // A known token whose lease has disappeared is a contract error; must fail explicitly, cannot silently return undefined.
     const normalizedToken = canonicalClaimToken(claimToken);
     return await this.#transaction(true, (database) => {
       const known = queryRows(database, "SELECT task_id FROM task_claim_tokens WHERE token = ?", [
@@ -402,7 +402,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 完成时必须同时匹配 owner 与 claim token，并在更新后解锁依赖完成的待办任务。
+  // Completion must match both owner and claim token, and unlock dependent completed TODO tasks after update.
   async completeTask(taskId: string, owner: string, claimToken: string): Promise<TaskCompletion> {
     const id = normalizeLookupId(taskId);
     const normalizedOwner = normalizeOwner(owner);
@@ -458,7 +458,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     return outcome;
   }
 
-  // 生成 token 与更新任务状态都在当前事务内完成；UPDATE 影响行数校验保证只有一个 owner 成功。
+  // Generating the token and updating task state occur in the current transaction; checking UPDATE affected rows ensures only one owner succeeds.
   #claim(database: Database, graph: TaskGraph, task: Task, owner: string, now: Date): TaskClaim {
     if (task.status !== TaskStatus.PENDING) {
       throw new TaskStateError(`Task ${task.id} is ${task.status}; expected pending`);
@@ -488,7 +488,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 所有 worktree 状态迁移共用此事务路径，统一校验任务状态、当前状态和目标约束。
+  // All worktree state migrations share this transaction path, uniformly validating task state, current state, and target constraints.
   async #transitionWorktree(
     taskId: string,
     options: {
@@ -501,8 +501,8 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
       readonly requiredTaskStatus: TaskStatus;
     },
   ): Promise<WorktreeBinding> {
-    // binding 的写入和 event 插入在同一个 SQLite 事务内完成，
-    // 任一失败都整体回滚，确保审计事实与当前状态始终对应。
+    // binding writes and event inserts complete within the same SQLite transaction,
+    // Rolls back entirely on any failure, ensuring audit facts always match current state.
     const normalized = normalizeLookupId(taskId);
     const occurredAt = validDate(options.occurredAtUtc);
     const branchTip = options.branchTip === null ? null : canonicalGitObjectId(options.branchTip);
@@ -552,7 +552,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 事务先取跨进程文件锁，再以 BEGIN IMMEDIATE 打开 SQLite 事务，避免并发写入互相覆盖。
+  // Transaction acquires cross-process file lock first, then opens SQLite transaction with BEGIN IMMEDIATE to prevent concurrent writes from overwriting each other.
   async #transaction<T>(create: boolean, operation: (database: Database) => T): Promise<T> {
     const paths = await this.#preparePaths(create);
     if (paths === undefined) {
@@ -597,7 +597,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
             try {
               database.run("ROLLBACK");
             } catch {
-              // 事务已经失败时，原始错误更有诊断价值。
+              // When the transaction has already failed, the original error has more diagnostic value.
             }
             if (error instanceof TaskError) throw error;
             throw new TaskStorageError("SQLite Task transaction failed", { cause: error });
@@ -614,7 +614,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     });
   }
 
-  // 解析真实 workspace 并确保 .agent_tutorial 目录存在；只读路径缺失时返回 undefined。
+  // Resolve real workspace and ensure .agent_tutorial directory exists; return undefined if read-only path is missing.
   async #preparePaths(create: boolean): Promise<SqlitePaths | undefined> {
     let workspace: string;
     try {
@@ -645,7 +645,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     }
   }
 
-  // 打开数据库和锁文件前校验路径未被符号链接替换，防止从工作区外读写。
+  // Validate that paths are not replaced by symlinks before opening databases and lock files, preventing reads and writes outside the workspace.
   async #validatePaths(paths: SqlitePaths): Promise<void> {
     const rootInfo = await lstat(paths.root);
     if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
@@ -662,7 +662,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     }
   }
 
-  // 所有外部生成的 id 统一经过 canonicalTaskId，让存储层只接受规范 UUID。
+  // Normalize all externally generated ids through canonicalTaskId, allowing the storage layer to accept canonical UUIDs only.
   #nextId(): string {
     try {
       return canonicalTaskId(this.#idGenerator());
@@ -671,7 +671,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     }
   }
 
-  // claim token 同样强制规范 UUID，保证 lookupClaim 的键稳定。
+  // claim token also enforces canonical UUIDs to ensure stable lookupClaim keys.
   #nextClaimToken(): string {
     try {
       return canonicalClaimToken(this.#claimTokenGenerator());
@@ -683,7 +683,7 @@ export class SqliteTaskStore implements LeasedTaskStore, WorktreeStore {
     }
   }
 
-  // 每次事务从注入时钟取当前时间，避免测试依赖真实 Date.now()。
+  // Each transaction gets the current time from the injected clock to prevent tests from depending on real Date.now().
   #now(): Date {
     const value = this.#clock.now();
     if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
@@ -699,10 +699,10 @@ async function openDatabase(paths: SqlitePaths): Promise<Database> {
   const database = await readDatabase(paths.database, SQL);
   try {
     database.run("PRAGMA foreign_keys = ON");
-    // tasks CHECK 固化租约状态组合；worktree_bindings 保证 name/branch/path 唯一；
-    // worktree_events 用触发器拒绝 UPDATE/DELETE，形成不可变审计链。
-    // 同一数据库文件同时保存任务、claim、worktree binding 和 append-only 审计事件；
-    // 约束在 SQLite 层把非法状态组合和事件改写直接拒绝。
+    // tasks CHECK solidifies lease state combinations; worktree_bindings guarantees uniqueness of name/branch/path;
+    // worktree_events rejects UPDATE/DELETE using triggers to form an immutable audit chain.
+    // The same database file saves tasks, claims, worktree bindings, and append-only audit events;
+    // Constraints at the SQLite layer reject invalid state combinations and event rewrites directly.
     database.run(`
       CREATE TABLE IF NOT EXISTS task_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       INSERT OR IGNORE INTO task_metadata(key, value) VALUES ('schema_version', '1');
@@ -792,7 +792,7 @@ async function openDatabase(paths: SqlitePaths): Promise<Database> {
   }
 }
 
-// 文件不存在时创建空库，否则读取现有字节；解析失败由上层包装为 TaskStorageError。
+// Create an empty store if the file does not exist, otherwise read existing bytes. Upper layers wrap parse failures as TaskStorageError.
 async function readDatabase(path: string, SQL: SqlJsStatic): Promise<Database> {
   try {
     const bytes = await readFile(path);
@@ -803,7 +803,7 @@ async function readDatabase(path: string, SQL: SqlJsStatic): Promise<Database> {
   }
 }
 
-// 惰性加载 sql.js WASM，只初始化一次。
+// Lazily load sql.js WASM, initializing once only.
 async function getSql(): Promise<SqlJsStatic> {
   if (sqlPromise === undefined) {
     sqlPromise = initSqlJs({
@@ -813,7 +813,7 @@ async function getSql(): Promise<SqlJsStatic> {
   return await sqlPromise;
 }
 
-// 先写临时文件再 rename，避免进程中断留下半写数据库。
+// Writes temporary file first then renames, avoiding half-written databases on process interruption.
 async function persistDatabase(path: string, content: Uint8Array): Promise<void> {
   const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
@@ -830,7 +830,7 @@ async function persistDatabase(path: string, content: Uint8Array): Promise<void>
   }
 }
 
-// 打开前只允许普通文件数据库，拒绝符号链接或目录目标。
+// Permit normal file databases only before opening; reject symlinks or directory targets.
 async function validateDatabaseTargetBeforeOpen(paths: SqlitePaths): Promise<void> {
   const information = await lstatIfExists(paths.database);
   if (information === undefined) return;
@@ -840,7 +840,7 @@ async function validateDatabaseTargetBeforeOpen(paths: SqlitePaths): Promise<voi
   await validateDatabaseFile(paths);
 }
 
-// 数据库必须位于 workspace 内且 nlink 为 1，避免硬链接被其他位置改写。
+// The database must reside in the workspace with nlink equal to 1 to prevent hard links from modification elsewhere.
 async function validateDatabaseFile(paths: SqlitePaths): Promise<void> {
   const resolved = await realpath(paths.database);
   const information = await stat(paths.database);
@@ -854,7 +854,7 @@ async function validateDatabaseFile(paths: SqlitePaths): Promise<void> {
   }
 }
 
-// 从 tasks 与 task_dependencies 重建完整任务图，并校验循环依赖。
+// Rebuilds full task graph from tasks and task_dependencies, and validates circular dependencies.
 function loadGraph(database: Database): TaskGraph {
   const rows = queryRows(
     database,
@@ -901,7 +901,7 @@ function loadGraph(database: Database): TaskGraph {
   return Object.freeze({ tasks, order: Object.freeze(order) });
 }
 
-// 按 task_id 读取 worktree binding；不存在时抛出显式状态错误。
+// Read the worktree binding by task_id. Throw an explicit state error if it does not exist.
 function loadWorktreeBinding(database: Database, taskId: string): WorktreeBinding {
   const row = queryRows(
     database,
@@ -933,7 +933,7 @@ function loadWorktreeBinding(database: Database, taskId: string): WorktreeBindin
   }
 }
 
-// 把审计事件行解析成 WorktreeEvent，任何字段损坏都会让事务失败。
+// Parse audit event rows into WorktreeEvents; any field corruption fails the transaction.
 function worktreeEventFromRow(row: Record<string, unknown>): WorktreeEvent {
   try {
     return new WorktreeEvent({
@@ -956,7 +956,7 @@ function worktreeEventFromRow(row: Record<string, unknown>): WorktreeEvent {
   }
 }
 
-// 插入事件后读取 last_insert_rowid 作为不可变 sequence，返回事件供调用方使用。
+// Read last_insert_rowid as an immutable sequence after inserting the event, and return the event for caller use.
 function appendWorktreeEvent(
   database: Database,
   action: WorktreeAction,
@@ -999,7 +999,7 @@ function appendWorktreeEvent(
   });
 }
 
-// 深度优先检测循环和缺失依赖，保证图可安全执行。
+// Detect cycles and missing dependencies depth-first to ensure the graph can execute safely.
 function validateGraph(tasks: ReadonlyMap<string, Task>): void {
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -1026,7 +1026,7 @@ function getExisting(graph: TaskGraph, id: string): Task {
   return task;
 }
 
-// 到期租约在读取/认领前统一归还为 pending，不等调用方主动续租。
+// Return expired leases to pending before read/claim instead of waiting for callers to renew.
 function releaseExpired(database: Database, now: Date): void {
   database.run(
     "UPDATE tasks SET status = 'pending', owner = NULL, claim_token = NULL, lease_expires_at_utc = NULL WHERE status = 'in_progress' AND lease_expires_at_utc IS NOT NULL AND lease_expires_at_utc <= ?",
@@ -1034,7 +1034,7 @@ function releaseExpired(database: Database, now: Date): void {
   );
 }
 
-// 将 sql.js exec 结果转换为列名到值的对象数组，空结果返回 []。
+// Convert sql.js exec results into object arrays of column names to values; return [] for empty results.
 function queryRows(
   database: Database,
   sql: string,
@@ -1050,7 +1050,7 @@ function queryRows(
 
 type SqlParam = string | number | null;
 
-// 依赖必须为规范 UUID 且不重复；重复或格式错误在写入前失败。
+// Dependencies must be canonical UUIDs and unique; duplicates or formatting errors fail before writing.
 function normalizeDependencies(values: readonly string[]): readonly string[] {
   if (!Array.isArray(values)) throw new TaskGraphError("Task dependencies must be an array");
   const normalized = values.map((value) => canonicalTaskId(value));
@@ -1060,7 +1060,7 @@ function normalizeDependencies(values: readonly string[]): readonly string[] {
   return Object.freeze(normalized);
 }
 
-// 查询用 id 采用规范格式，避免调用方输入直接进入 SQL 参数。
+// Query IDs use canonical formats to prevent caller input from directly entering SQL parameters.
 function normalizeLookupId(value: string): string {
   try {
     return canonicalTaskId(value);
@@ -1069,7 +1069,7 @@ function normalizeLookupId(value: string): string {
   }
 }
 
-// claim token 与任务 id 使用同一 UUID 规范，便于幂等重放。
+// claim token and task id use the same UUID specification for idempotent replay.
 function canonicalClaimToken(value: string): string {
   try {
     return canonicalTaskId(value);
@@ -1078,12 +1078,12 @@ function canonicalClaimToken(value: string): string {
   }
 }
 
-// 时间统一以 ISO-8601 UTC 文本持久化，租约比较可按字符串字典序进行。
+// Persist time as ISO-8601 UTC text so leases can be compared lexicographically.
 function encodeDate(value: Date): string {
   return value.toISOString();
 }
 
-// 可空时间字段反序列化；非空但无效的时间直接判为存储损坏。
+// Nullable time field deserialization; non-null invalid times are treated directly as storage corruption.
 function parseOptionalDate(value: unknown): Date | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") throw new TaskStorageError("Persisted lease expiry is invalid");
@@ -1093,14 +1093,14 @@ function parseOptionalDate(value: unknown): Date | null {
   return parsed;
 }
 
-// 必填时间字段不允许缺失，缺失即存储损坏。
+// Required time fields cannot be missing; missing values indicate storage corruption.
 function parseRequiredDate(value: unknown, label: string): Date {
   const parsed = parseOptionalDate(value);
   if (parsed === null) throw new TaskStorageError(`Persisted ${label} is invalid`);
   return parsed;
 }
 
-// worktree 转换时间来自外部，这里先校验再进入持久化。
+// Worktree transition times come from outside; validate here before persistence.
 function validDate(value: Date): Date {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
     throw new WorktreeStateError("Worktree transition time must be a valid Date");
@@ -1108,7 +1108,7 @@ function validDate(value: Date): Date {
   return new Date(value.getTime());
 }
 
-// 持久化行字段统一按类型校验，返回强类型值或抛出存储损坏错误。
+// Validate persisted row fields uniformly by type, returning strongly typed values or throwing storage corruption errors.
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string") throw new TaskStorageError(`Persisted ${label} is invalid`);
   return value;
@@ -1126,7 +1126,7 @@ function requiredNumber(value: unknown, label: string): number {
   return value;
 }
 
-// 进程内串行化同一数据库的 Promise 链，避免同进程并发绕过文件锁的时序。
+// In-process Promise chain serializes the same database to prevent concurrent operations in the same process from bypassing file lock ordering.
 async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const previous = PROCESS_LOCK_TAILS.get(key);
   const result = previous === undefined ? operation() : previous.then(operation);
@@ -1142,14 +1142,14 @@ async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Pr
   }
 }
 
-// 用 path.relative 判断目标是否位于 parent 内，比字符串前缀更可靠。
+// Use path.relative to check whether the target is inside parent, which is more reliable than string prefixes.
 function pathIsInside(parent: string, child: string): boolean {
   const pathFromParent = relative(parent, child);
   return pathFromParent === "" || (!pathFromParent.startsWith("..") && !isAbsolute(pathFromParent));
 }
 
-// 一次 lstat 同时得到"是否存在"和元信息：路径不存在返回 undefined，其他 IO 错误继续抛出。
-// 调用方据此避免"先探测存在再取元信息"的两次 syscall——锁文件在两次之间被释放会误报错误。
+// A single lstat gets both existence and metadata: returns undefined if the path does not exist, and throws other IO errors.
+// Callers avoid two syscalls of "probe existence then fetch metadata" -- releasing lock files between them triggers false errors.
 async function lstatIfExists(path: string): Promise<Stats | undefined> {
   try {
     return await lstat(path);
@@ -1159,24 +1159,24 @@ async function lstatIfExists(path: string): Promise<Stats | undefined> {
   }
 }
 
-// 将 ENOENT 转为 false，其他 IO 错误继续抛出。
+// Convert ENOENT to false; continue throwing other IO errors.
 async function pathExists(path: string): Promise<boolean> {
   return (await lstatIfExists(path)) !== undefined;
 }
 
-// 从任意 Error-like 对象读取 code，供 Windows 文件锁竞态判断使用。
+// Reads code from any Error-like object for Windows file lock race condition checks.
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
 }
 
-// Windows 下重命名/删除锁文件可能短暂返回 EBUSY/ENOTEMPTY/EPERM，这些错误可重试。
+// On Windows, renaming or deleting lock files can briefly return EBUSY/ENOTEMPTY/EPERM; these errors are retriable.
 function isWindowsLockRace(error: unknown): boolean {
   return (
     hasErrorCode(error, "EBUSY") || hasErrorCode(error, "ENOTEMPTY") || hasErrorCode(error, "EPERM")
   );
 }
 
-// 文件锁竞态重试前的短等待。
+// Short wait before retrying on file lock contention.
 async function delay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }

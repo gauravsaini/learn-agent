@@ -1,4 +1,4 @@
-// 章节能力清单：每个 profile 都是冻结单例，组合根据此决定启用的运行时边界。
+// Chapter capability list: each profile is a frozen singleton; the composition root determines enabled runtime boundaries from it.
 export type Capability =
   | "loop"
   | "powershell"
@@ -19,16 +19,16 @@ export type Capability =
   | "cron"
   | "teammate"
   | "mailbox"
-  // protocol 与 plan_gate 共同表示结构化审批消息和副作用执行门控。
+  // protocol and plan_gate together represent structured approval messages and side-effect execution gating.
   | "protocol"
   | "plan_gate"
-  // task_dag_sqlite 与 work_stealing 表示带租约的 SQLite 任务图与去中心化认领。
+  // task_dag_sqlite and work_stealing indicate leased SQLite task graphs and decentralized claims.
   | "task_dag_sqlite"
   | "work_stealing"
-  // worktree 表示受控 Git 工作树隔离，mcp 表示可动态发布和撤销的远程 MCP 工具边界。
+  // worktree indicates controlled Git worktree isolation; mcp indicates remote MCP tool boundaries that can be dynamically published and revoked.
   | "worktree"
   | "mcp"
-  // full_harness 标记 P20 完整能力集，不新增独立运行时。
+  // full_harness marks the complete P20 capability profile without adding an independent runtime.
   | "full_harness";
 
 export interface ChapterProfile {
@@ -77,7 +77,7 @@ class CapabilitySet implements ReadonlySet<Capability> {
   }
 }
 
-// 每章只声明新增能力；后续章节通过累计 PROFILE_DELTAS 得到完整档案。
+// Each chapter declares only new capabilities; subsequent chapters obtain complete profiles through cumulative PROFILE_DELTAS.
 const PROFILE_DELTAS = [
   ["loop", "powershell"],
   ["tool_registry", "files"],
@@ -98,11 +98,11 @@ const PROFILE_DELTAS = [
   ["task_dag_sqlite", "work_stealing"],
   ["worktree"],
   ["mcp"],
-  // full_harness 是 P20 的标记能力：不新增具体运行时，只声明前十九章能力全部生效。
+  // full_harness is the P20 marker capability: adds no specific runtime, only declares capabilities from the previous 19 chapters are active.
   ["full_harness"],
 ] as const satisfies readonly (readonly Capability[])[];
 
-// PROFILES 由增量能力数组推导，保证每章档案都是前一章的严格超集。
+// PROFILES is derived from incremental capability arrays, ensuring each chapter profile is a strict superset of the previous one.
 const PROFILES: readonly ChapterProfile[] = Object.freeze(
   PROFILE_DELTAS.map((_, index) =>
     Object.freeze({
@@ -131,11 +131,11 @@ export const P16 = profileAt(16);
 export const P17 = profileAt(17);
 export const P18 = profileAt(18);
 export const P19 = profileAt(19);
-// P20 是完整 Harness 档案，统一启用前十九章已经验证的累计能力。
+// P20 is the complete Harness profile, uniformly enabling cumulative capabilities verified across the previous nineteen chapters.
 export const P20 = profileAt(20);
 
 export function profileForChapter(chapter: number): ChapterProfile {
-  // 只有 1 到 20 的固定章节可查询；越界立即失败，避免调用方构造未知档案。
+  // Only fixed chapters 1 through 20 are queryable; fail immediately on out-of-bounds queries to prevent unknown profiles.
   if (!Number.isInteger(chapter) || chapter < 1 || chapter > PROFILES.length) {
     throw new Error("chapter must be an integer from 1 to 20");
   }
@@ -144,7 +144,7 @@ export function profileForChapter(chapter: number): ChapterProfile {
 
 function profileAt(chapter: number): ChapterProfile {
   const profile = PROFILES[chapter - 1];
-  // 未迁移章节在运行前显式失败，而不是返回空能力集。
+  // Unmigrated chapters fail explicitly before execution instead of returning empty capability sets.
   if (profile === undefined) {
     throw new Error(`Chapter ${chapter} has not been migrated to TypeScript yet`);
   }

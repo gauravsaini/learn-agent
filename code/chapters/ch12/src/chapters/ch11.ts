@@ -1,5 +1,5 @@
 import { runProfile } from "../cli.js";
 import { P11 } from "../core/profiles.js";
 
-// 固定入口启用 P11 的模型请求恢复边界。
+// Fixed entrypoint enables P11 model request recovery boundary.
 process.exitCode = await runProfile(P11, process.argv.slice(2));

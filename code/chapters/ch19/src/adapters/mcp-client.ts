@@ -1,4 +1,4 @@
-// MCP stdio 客户端适配器：封装 SDK 初始化、分页发现、串行调用、超时映射与子进程终态传播。
+// MCP stdio client adapter: encapsulates SDK initialization, paginated discovery, serial calls, timeout mapping, and child process terminal state propagation.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
@@ -13,13 +13,13 @@ import {
 import type { McpConnection, McpConnectionFactory, McpServerSpec } from "../features/mcp-tools.js";
 
 const CLIENT_INFO = Object.freeze({ name: "agent-tutorial", version: "0.1.0" });
-// 请求超时后短暂观察子进程状态，用于区分纯超时与 transport 已退出。
+// Observe child process state briefly after request timeout to distinguish pure timeouts from transport exits.
 const TRANSPORT_EXIT_GRACE_MS = 100;
 
-// stdio 工厂仅在连接成功后交付实例；初始化失败时先关闭子进程相关资源。
+// stdio factory delivers instances only after successful connection; close child process resources first if initialization fails.
 export class StdioMcpConnectionFactory implements McpConnectionFactory {
   async open(spec: McpServerSpec, signal?: AbortSignal): Promise<McpConnection> {
-    // start 成功是工厂交付边界；失败时先尽力关闭 client/transport，避免遗留子进程。
+    // Successful start is the factory delivery boundary; on failure, close client/transport with best effort to avoid orphan child processes.
     const connection = new StdioMcpConnection(spec);
     try {
       await connection.start(signal);
@@ -31,17 +31,17 @@ export class StdioMcpConnectionFactory implements McpConnectionFactory {
   }
 }
 
-// 单连接将请求串行化，并将传输终止传播给排队和进行中的 MCP 调用。
+// A single connection serializes requests and propagates transport termination to queued and active MCP calls.
 class StdioMcpConnection implements McpConnection {
-  // spec 决定启动命令与超时；transport/client 生命周期与本连接实例一一对应。
+  // spec determines startup command and timeout; transport/client lifecycles map one-to-one with this connection instance.
   readonly #spec: McpServerSpec;
   readonly #transport: StdioClientTransport;
   readonly #client: Client;
-  // 串行队列尾链：同一 connection 的新操作总是排在已有操作之后。
+  // Serial queue tail-chain: new operations on the same connection always queue behind existing operations.
   #tail: Promise<void> = Promise.resolve();
-  // 首个不可逆 transport 错误只记录一次，终止所有当前等待者并让后续操作直接失败。
+  // The first irreversible transport error is recorded only once, terminating all current waiters and failing subsequent operations directly.
   #terminalError: McpTransportError | undefined;
-  // terminalFailure 参与正在执行请求的 Promise.race；terminalSignal 只通知 Watchdog。
+  // terminalFailure joins the Promise.race of executing requests; terminalSignal notifies Watchdog only.
   #rejectTerminal: (error: McpTransportError) => void = () => {};
   #resolveTerminal: () => void = () => {};
   readonly #terminalFailure = new Promise<never>((_, reject) => {
@@ -51,12 +51,12 @@ class StdioMcpConnection implements McpConnection {
     this.#resolveTerminal = resolve;
   });
   #closing = false;
-  // closed 是最终资源状态，started 防止同一 SDK client 重复 initialize。
+  // closed is the final resource state; started prevents the same SDK client from initializing repeatedly.
   #closed = false;
   #started = false;
 
   constructor(spec: McpServerSpec) {
-    // 构造阶段只创建 transport/client 并绑定终态回调，不启动子进程协议握手。
+    // The construction stage only creates transport/client and binds terminal callbacks without starting subprocess protocol handshakes.
     this.#spec = spec;
     this.#transport = new StdioClientTransport({
       command: spec.command,
@@ -65,7 +65,7 @@ class StdioMcpConnection implements McpConnection {
       stderr: "ignore",
     });
     this.#client = new Client(CLIENT_INFO, { capabilities: {} });
-    // 提前消费终态拒绝，避免未等待的 Promise 产生 unhandled rejection。
+    // Consume terminal rejection early to prevent unhandled rejection on unwatched Promises.
     void this.#terminalFailure.catch(() => undefined);
     this.#transport.onclose = () => {
       if (!this.#closing && !this.#closed) {
@@ -79,7 +79,7 @@ class StdioMcpConnection implements McpConnection {
     };
   }
 
-  // 启动连接：等待 initialize 完成，连接建立后再确认 transport 没有已经失败。
+  // Start connection: wait for initialize to complete, and confirm transport has not already failed after establishing the connection.
   async start(signal?: AbortSignal): Promise<void> {
     if (this.#started) {
       throw new McpTransportError("MCP stdio connection was already started");
@@ -99,7 +99,7 @@ class StdioMcpConnection implements McpConnection {
     }
   }
 
-  // 分页读取 tools/list，并校验远程声明的名称、描述和 input schema 契约。
+  // Reads tools/list with pagination, validating name, description, and input schema contracts declared remotely.
   async listTools(
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<readonly McpPublishedTool[]> {
@@ -134,7 +134,7 @@ class StdioMcpConnection implements McpConnection {
     }, options.signal);
   }
 
-  // 调用远程工具，只把通过契约校验的 content、structuredContent 和 isError 交回上层。
+  // Call remote tools, returning only contract-validated content, structuredContent, and isError to upper layers.
   async callTool(
     name: string,
     argumentsValue: Readonly<Record<string, unknown>>,
@@ -173,7 +173,7 @@ class StdioMcpConnection implements McpConnection {
     }, options.signal);
   }
 
-  // 正常关闭：先等待队列中已有操作结束，再关闭 SDK client，避免关闭打断进行中的请求。
+  // Normal shutdown: wait for existing queue operations to end before closing the SDK client, avoiding interrupting active requests.
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closing = true;
@@ -189,7 +189,7 @@ class StdioMcpConnection implements McpConnection {
     this.#resolveTerminal();
   }
 
-  // 启动失败时的兜底关闭；client 关闭不成功时直接关闭 transport，尽力回收子进程。
+  // Fallback close on startup failure; close transport directly if client close fails, reclaiming child processes where possible.
   async closeAfterFailedStart(): Promise<void> {
     this.#closing = true;
     try {
@@ -202,12 +202,12 @@ class StdioMcpConnection implements McpConnection {
     }
   }
 
-  // 向运行时暴露“连接已终止”信号，供 Watchdog 撤销该 alias 的动态工具。
+  // Expose the "connection terminated" signal to runtime so Watchdog revokes dynamic tools for this alias.
   waitForFailure(): Promise<void> {
     return this.#terminalSignal;
   }
 
-  // 单连接串行队列：操作按顺序执行，同时与 transport 终态、调用方 abort 竞争。
+  // Single-connection serial queue: operations execute sequentially while racing transport termination and caller aborts.
   async #enqueue<Result>(operation: () => Promise<Result>, signal?: AbortSignal): Promise<Result> {
     if (!this.#started) throw new McpTransportError("MCP stdio connection was not started");
     if (this.#closed) throw new McpTransportError("MCP stdio connection is closed");
@@ -225,7 +225,7 @@ class StdioMcpConnection implements McpConnection {
         throw mapSdkError(error, "MCP stdio request failed");
       }
     });
-    // 无论 queued 成败，tail 都结算为 undefined，保证下个操作从当前批次结束后开始排队。
+    // Regardless of queued outcome, resolve tail to undefined. This ensures the next operation queues after the current batch finishes.
     this.#tail = queued.then(
       () => undefined,
       () => undefined,
@@ -233,7 +233,7 @@ class StdioMcpConnection implements McpConnection {
     return await waitForAbort(queued, signal);
   }
 
-  // 记录首个不可逆传输错误，并唤醒所有等待中的调用；后续操作直接失败。
+  // Record the first irreversible transport error and wake up all waiting calls; subsequent operations fail immediately.
   #markTerminal(error: McpTransportError): void {
     if (this.#terminalError !== undefined) return;
     this.#terminalError = error;
@@ -241,7 +241,7 @@ class StdioMcpConnection implements McpConnection {
     this.#resolveTerminal();
   }
 
-  // 给 RequestTimeout 一个短观察窗口，确认是子进程退出还是纯协议超时。
+  // Provide a short observation window for RequestTimeout to check whether the child process exited or protocol timed out.
   async #waitForTransportClosure(): Promise<boolean> {
     if (this.#transport.pid === null || this.#terminalError !== undefined) return true;
     return await new Promise<boolean>((resolve) => {
@@ -264,7 +264,7 @@ class StdioMcpConnection implements McpConnection {
   }
 }
 
-// 统一把秒级配置转换为 SDK 的单次请求超时和总超时。
+// Uniformly convert second-based configuration to SDK single-request timeout and total timeout.
 function requestOptions(
   seconds: number,
   signal?: AbortSignal,
@@ -273,7 +273,7 @@ function requestOptions(
   readonly maxTotalTimeout: number;
   readonly signal?: AbortSignal;
 } {
-  // SDK 的单次和累计超时使用同一预算，避免内部重试突破本地策略上限。
+  // Single and cumulative SDK timeouts use the same budget to prevent internal retries from exceeding local policy caps.
   const timeout = milliseconds(seconds);
   return Object.freeze({
     timeout,
@@ -282,7 +282,7 @@ function requestOptions(
   });
 }
 
-// 秒转毫秒，并拒绝 NaN、零值或超出 SDK 整数上限的配置。
+// Convert seconds to milliseconds, and reject NaN, zero, or configurations exceeding SDK integer limits.
 function milliseconds(seconds: number): number {
   const value = seconds * 1000;
   if (!Number.isFinite(value) || value <= 0 || value > 2_147_483_647) {
@@ -291,7 +291,7 @@ function milliseconds(seconds: number): number {
   return Math.max(1, Math.ceil(value));
 }
 
-// 把 SDK 异常映射为本地错误类型，保留 abort 原样，避免把业务错误当成协议错误。
+// Map SDK exceptions to local error types, preserving abort as-is to avoid mistaking business errors for protocol errors.
 function mapSdkError(error: unknown, message: string): Error {
   if (isAbortError(error)) return error;
   if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) {
@@ -303,14 +303,14 @@ function mapSdkError(error: unknown, message: string): Error {
   return new McpTransportError(message, { cause: error });
 }
 
-// 识别 MCP SDK 的 RequestTimeout 错误码，用于区分超时与连接丢失。
+// Identify RequestTimeout error code in the MCP SDK to distinguish timeouts from connection loss.
 function isRequestTimeout(error: unknown): error is McpError {
   return error instanceof McpError && error.code === ErrorCode.RequestTimeout;
 }
 
-// 给异步结果附加调用方 abort 监听，取消时只拒绝当前等待者。
+// Attach caller abort listeners to async results, rejecting only current waiters on cancellation.
 function waitForAbort<Result>(promise: Promise<Result>, signal?: AbortSignal): Promise<Result> {
-  // AbortSignal 只取消当前调用方等待；底层串行队列仍负责结算实际 SDK 操作。
+  // AbortSignal cancels only current caller wait; the underlying serial queue still settles actual SDK operations.
   if (signal === undefined) return promise;
   if (signal.aborted) return Promise.reject(abortReason(signal));
   return new Promise<Result>((resolve, reject) => {
@@ -329,19 +329,19 @@ function waitForAbort<Result>(promise: Promise<Result>, signal?: AbortSignal): P
   });
 }
 
-// 生成统一、可识别的 AbortError 原因。
+// Generate a unified, recognizable AbortError cause.
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason === undefined
     ? new DOMException("The operation was aborted", "AbortError")
     : signal.reason;
 }
 
-// 判断 SDK 抛出的对象是否为 AbortError。
+// Determine whether the object thrown by the SDK is an AbortError.
 function isAbortError(value: unknown): value is Error {
   return value instanceof Error && value.name === "AbortError";
 }
 
-// 类型守卫：判断未知值是否为非 null、非数组的普通对象。
+// Type guard: checks if an unknown value is a plain object that is non-null and non-array.
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,5 +1,5 @@
 import { runProfile } from "../cli.js";
 import { P16 } from "../core/profiles.js";
 
-// 固定入口启用 P16 的计划审批协议与执行门控。
+// Fixed entrypoint enables P16 plan approval protocol and execution gating.
 process.exitCode = await runProfile(P16, process.argv.slice(2));

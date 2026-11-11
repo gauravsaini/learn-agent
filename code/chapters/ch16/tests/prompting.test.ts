@@ -75,12 +75,12 @@ describe("dynamic prompt renderer", () => {
       const tools = new ToolRegistry();
       registerReadTool(tools, "read_file");
       registerReadTool(tools, "todo_write");
-      await writeSkill(workspace, "sql-style", "SQL 编写规范");
+      await writeSkill(workspace, "sql-style", "SQL authoring specification");
       const skills = SkillRegistry.scan(workspace);
       const store = new MemoryStore({ workspace, idGenerator: () => "one" });
       await store.extend([
-        record("database", "生产数据库约束", "始终使用真实数据库。"),
-        record("keyboard", "未选择的键盘索引说明", "PRIVATE UNSELECTED MEMORY"),
+        record("database", "Production database constraints", "Always use a real database."),
+        record("keyboard", "Unselected keyboard index description", "PRIVATE UNSELECTED MEMORY"),
       ]);
       const memory = new MemorySession({
         store,
@@ -90,23 +90,23 @@ describe("dynamic prompt renderer", () => {
           },
         },
       });
-      await memory.beginTurn("检查数据库");
+      await memory.beginTurn("Check database");
 
       const prompt = new DynamicPromptRenderer().render({
-        identity: "主智能体",
+        identity: "Main Agent",
         tools,
         workspace,
         skills,
         memory,
-        context: { mode: "编码", nested: { b: 2, a: 1 }, flags: [true, null, 1.5] },
+        context: { mode: "coding", nested: { b: 2, a: 1 }, flags: [true, null, 1.5] },
       });
 
       expect(prompt).toBe(
-        `## identity\n主智能体\ncontext: {"flags":[true,null,1.5],"mode":"编码","nested":{"a":1,"b":2}}\n\n` +
+        `## identity\nMain Agent\ncontext: {"flags":[true,null,1.5],"mode":"coding","nested":{"a":1,"b":2}}\n\n` +
           "## tools\n- read_file\n- todo_write\n\n" +
           `## workspace\n${resolve(workspace)}\n\n` +
-          "## skills\n- **sql-style**: SQL 编写规范\n\n" +
-          "## memory\n<relevant_memories>\n\n## database (project)\n\n生产数据库约束\n\n始终使用真实数据库。\n\n</relevant_memories>",
+          "## skills\n- **sql-style**: SQL authoring specification\n\n" +
+          "## memory\n<relevant_memories>\n\n## database (project)\n\nProduction database constraints\n\nAlways use a real database.\n\n</relevant_memories>",
       );
       expect(prompt).not.toContain("Private body");
       expect(prompt).not.toContain("PRIVATE UNSELECTED MEMORY");
@@ -124,12 +124,12 @@ describe("dynamic prompt renderer", () => {
       registerReadTool(tools, "inspect");
       const renderer = new DynamicPromptRenderer();
       const firstContext: Record<string, JsonValue> = {
-        b: [true, null, "中文"],
+        b: [true, null, "Chinese"],
         a: { y: 2, x: 1 },
       };
       const reorderedContext: Record<string, JsonValue> = {
         a: { x: 1, y: 2 },
-        b: [true, null, "中文"],
+        b: [true, null, "Chinese"],
       };
       const first = renderer.render({
         identity: "agent",

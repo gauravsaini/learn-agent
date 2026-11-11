@@ -1,4 +1,4 @@
-// 章节能力清单：每个 profile 都是冻结单例，组合根据此决定启用的运行时边界。
+// Chapter capability list: each profile is a frozen singleton; the composition root determines enabled runtime boundaries from it.
 export type Capability =
   | "loop"
   | "powershell"
@@ -19,19 +19,19 @@ export type Capability =
   | "cron"
   | "teammate"
   | "mailbox"
-  // protocol 与 plan_gate 共同表示结构化审批消息和副作用执行门控。
+  // protocol and plan_gate together represent structured approval messages and side-effect execution gating.
   | "protocol"
   | "plan_gate";
 
 export interface ChapterProfile {
-  // 固定章节编号，用于选择累计能力和错误提示。
+  // Fixed chapter number used to select cumulative capabilities and error messages.
   readonly chapter: number;
-  // 只读能力集合，组合根据此决定依赖和工具是否必须存在。
+  // Read-only capability set; the composition root uses this to determine whether dependencies and tools must exist.
   readonly capabilities: ReadonlySet<Capability>;
 }
 
 class CapabilitySet implements ReadonlySet<Capability> {
-  // 内部集合只在构造时写入，向外实现 ReadonlySet 以防 profile 被修改。
+  // Internal collection is written only at construction, implementing ReadonlySet externally to prevent profile modification.
   readonly #values: Set<Capability>;
 
   constructor(values: readonly Capability[]) {
@@ -39,27 +39,27 @@ class CapabilitySet implements ReadonlySet<Capability> {
   }
 
   get size(): number {
-    // 暴露集合大小以满足 ReadonlySet 契约。
+    // Expose set size to satisfy the ReadonlySet contract.
     return this.#values.size;
   }
 
   has(value: Capability): boolean {
-    // 组合根用 has 判断某章是否允许注入对应运行时。
+    // The composition root uses has to check if a chapter is permitted to inject the corresponding runtime.
     return this.#values.has(value);
   }
 
   entries(): SetIterator<[Capability, Capability]> {
-    // 迭代器保持原生 Set 的能力枚举顺序。
+    // The iterator maintains the capability enumeration order of native Set.
     return this.#values.entries();
   }
 
   keys(): SetIterator<Capability> {
-    // key 与 value 相同，保留 ReadonlySet 的标准接口。
+    // key matches value, preserving standard ReadonlySet interfaces.
     return this.#values.keys();
   }
 
   values(): SetIterator<Capability> {
-    // 返回当前冻结快照的能力迭代器。
+    // Returns an iterator of capabilities from the current frozen snapshot.
     return this.#values.values();
   }
 
@@ -67,14 +67,14 @@ class CapabilitySet implements ReadonlySet<Capability> {
     callbackfn: (value: Capability, value2: Capability, set: ReadonlySet<Capability>) => void,
     thisArg?: unknown,
   ): void {
-    // 回调接收本集合自身，禁止暴露可写内部 Set。
+    // Callbacks receive this collection itself, forbidding exposure of writable internal Sets.
     this.#values.forEach((value) => {
       callbackfn.call(thisArg, value, value, this);
     });
   }
 
   [Symbol.iterator](): SetIterator<Capability> {
-    // 允许用 spread 构造下一章的累计能力集合。
+    // Allows using spread syntax to construct cumulative capability sets for subsequent chapters.
     return this.values();
   }
 }
@@ -242,7 +242,7 @@ export const P15: ChapterProfile = Object.freeze({
   capabilities: new CapabilitySet([...P14.capabilities, "teammate", "mailbox"]),
 });
 
-// P16 只在 P15 上追加协议能力，不改变 P15 普通 Mailbox 的 schema 或工具集合。
+// P16 appends protocol capability to P15 without altering schema or tool set of normal P15 Mailbox.
 export const P16: ChapterProfile = Object.freeze({
   chapter: 16,
   capabilities: new CapabilitySet([...P15.capabilities, "protocol", "plan_gate"]),

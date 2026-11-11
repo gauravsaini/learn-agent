@@ -21,7 +21,7 @@ describe("chapter 1 Agent Loop", () => {
         assistantMessage(null, [toolCall("call-1", "shell", '{"command":"Write-Output 42"}')]),
         "tool_calls",
       ),
-      reply(assistantMessage("PowerShell 返回 42。"), "stop"),
+      reply(assistantMessage("PowerShell returned 42."), "stop"),
     ]);
     const commands = new FakeCommandRunner(commandResult("42"));
     const runner = buildAgent(P01, {
@@ -30,9 +30,9 @@ describe("chapter 1 Agent Loop", () => {
       commandRunner: commands,
     });
 
-    const result = await runner.run("运行 Write-Output 42，并告诉我结果");
+    const result = await runner.run("Run Write-Output 42 and tell me the result");
 
-    expect(result.finalText).toBe("PowerShell 返回 42。");
+    expect(result.finalText).toBe("PowerShell returned 42.");
     expect(result.turns).toBe(2);
     expect(commands.calls).toEqual([
       { command: "Write-Output 42", cwd: process.cwd(), timeoutMs: undefined },
@@ -54,12 +54,12 @@ describe("chapter 1 Agent Loop", () => {
   test("returns a paired unknown_tool result without invoking PowerShell", async () => {
     const model = new ScriptedModelClient([
       reply(assistantMessage(null, [toolCall("missing-1", "missing", "{}")]), "tool_calls"),
-      reply(assistantMessage("该工具不存在。"), "stop"),
+      reply(assistantMessage("This tool does not exist."), "stop"),
     ]);
     const commands = new FakeCommandRunner(commandResult("must not run"));
     const runner = buildAgent(P01, { model, workspace: process.cwd(), commandRunner: commands });
 
-    const result = await runner.run("调用不存在的工具");
+    const result = await runner.run("Call non-existent tool");
 
     expect(commands.calls).toEqual([]);
     expect(model.requests[1]?.messages[3]).toEqual({
@@ -67,19 +67,19 @@ describe("chapter 1 Agent Loop", () => {
       content: "Error [unknown_tool]: Unknown tool: missing",
       toolCallId: "missing-1",
     });
-    expect(result.finalText).toBe("该工具不存在。");
+    expect(result.finalText).toBe("This tool does not exist.");
     validateToolPairing(result.history);
   });
 
   test("rejects invalid JSON before invoking the command runner", async () => {
     const model = new ScriptedModelClient([
       reply(assistantMessage(null, [toolCall("bad-json", "shell", "{")]), "tool_calls"),
-      reply(assistantMessage("参数无效。"), "stop"),
+      reply(assistantMessage("Invalid arguments."), "stop"),
     ]);
     const commands = new FakeCommandRunner(commandResult("must not run"));
     const runner = buildAgent(P01, { model, workspace: process.cwd(), commandRunner: commands });
 
-    await runner.run("传递坏参数");
+    await runner.run("Pass bad arguments");
 
     expect(commands.calls).toEqual([]);
     expect(model.requests[1]?.messages[3]).toEqual({
@@ -103,16 +103,16 @@ describe("chapter 1 Agent Loop", () => {
       maxTurns: 2,
     });
 
-    await expect(runner.run("一直调用工具")).rejects.toThrow(AgentLimitError);
+    await expect(runner.run("Call tools continuously")).rejects.toThrow(AgentLimitError);
     expect(model.requests).toHaveLength(2);
     validateToolPairing(runner.history);
   });
 
   test("does not store a length-truncated assistant response as completed history", async () => {
-    const model = new ScriptedModelClient([reply(assistantMessage("未完成"), "length")]);
+    const model = new ScriptedModelClient([reply(assistantMessage("Incomplete"), "length")]);
     const runner = buildAgent(P01, { model, workspace: process.cwd() });
 
-    await expect(runner.run("生成长回答")).rejects.toThrow(IncompleteModelReplyError);
+    await expect(runner.run("Generate long reply")).rejects.toThrow(IncompleteModelReplyError);
     expect(runner.history.map((message) => message.role)).toEqual(["user"]);
   });
 });

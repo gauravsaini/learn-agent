@@ -1,4 +1,4 @@
-// MCP 工具领域与运行时：校验本地 allowlist，动态发布远程工具，并在连接失效时原子撤销注册项。
+// MCP tool domain and runtime: validates local allowlist, publishes remote tools dynamically, and revokes registrations atomically on disconnect.
 import { z } from "zod";
 
 import type { ToolCall } from "../core/messages.js";
@@ -17,22 +17,22 @@ const MAX_TOOL_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 
 export class McpContractError extends Error {
-  // 本地配置、远程声明或 JSON 负载违反 MCP 集成契约。
+  // Local configuration, remote declarations, or JSON payloads violate MCP integration contracts.
   override readonly name: string = "McpContractError";
 }
 
 export class McpTransportError extends Error {
-  // stdio 连接、初始化或请求传输失败；不包含远程工具主动返回的业务错误。
+  // stdio connection, initialization, or request transport failure; excludes business errors returned actively by remote tools.
   override readonly name: string = "McpTransportError";
 }
 
 export class McpTimeoutError extends McpTransportError {
-  // 单独标记超时，使运行时可以返回稳定错误码并撤销失效连接。
+  // Mark timeouts separately so the runtime can return stable error codes and revoke failed connections.
   override readonly name: string = "McpTimeoutError";
 }
 
 export interface McpSchemaValidator {
-  // 发布工具前把远程 JSON Schema 编译成同步谓词，调用阶段不再重复编译。
+  // Compile remote JSON Schema into synchronous predicates before publishing tools to avoid recompiling during calls.
   compile(
     exposedName: string,
     inputSchema: Readonly<Record<string, unknown>>,
@@ -40,18 +40,18 @@ export interface McpSchemaValidator {
 }
 
 export interface McpToolPolicyOptions {
-  // remoteName 必须与 tools/list 的原始名称精确匹配，effect 只由本地决定。
+  // remoteName must match the original name in tools/list exactly; local configuration alone determines effect.
   readonly remoteName: string;
   readonly effect: "read" | "write" | "execute" | "external";
 }
 
-// 本地策略是远程工具 effect 的唯一事实源；远程只负责实现能力，不决定权限。
+// Local policy is the single source of truth for remote tool effects; remote servers implement capabilities and do not decide permissions.
 export class McpToolPolicy {
   readonly remoteName: string;
   readonly effect: McpToolPolicyOptions["effect"];
 
   constructor(options: McpToolPolicyOptions) {
-    // 策略对象冻结后可安全复用于多个 server spec，不允许远程覆盖 effect。
+    // Frozen policy objects can be safely reused across multiple server specs; remote overrides of effects are not allowed.
     if (typeof options.remoteName !== "string" || options.remoteName.trim().length === 0) {
       throw new McpContractError("MCP tool policy remoteName must not be empty");
     }
@@ -68,7 +68,7 @@ export class McpToolPolicy {
 }
 
 export interface McpServerSpecOptions {
-  // alias 进入模型可见工具名；command/args/cwd 只交给 stdio 适配器启动子进程。
+  // The alias enters the tool name visible to the model; command/args/cwd are passed only to the stdio adapter to spawn child processes.
   readonly alias: string;
   readonly command: string;
   readonly args: readonly string[];
@@ -78,7 +78,7 @@ export interface McpServerSpecOptions {
   readonly cwd?: string;
 }
 
-// 一份本地 allowlist：只有明确声明了 alias 和 policy 的远程工具才允许进入注册表。
+// A local allowlist: only remote tools with an explicitly declared alias and policy can enter the registry.
 export class McpServerSpec {
   readonly alias: string;
   readonly command: string;
@@ -89,7 +89,7 @@ export class McpServerSpec {
   readonly cwd: string | undefined;
 
   constructor(options: McpServerSpecOptions) {
-    // 构造阶段完成别名、启动参数、policy 唯一性和超时校验，连接阶段只消费可信快照。
+    // Construction validates aliases, launch arguments, policy uniqueness, and timeouts; connection consumes only trusted snapshots.
     if (typeof options.alias !== "string" || !ALIAS_PATTERN.test(options.alias)) {
       throw new McpContractError("MCP server alias must match ^[a-z][a-z0-9_]{0,31}$");
     }
@@ -138,20 +138,20 @@ export class McpServerSpec {
 }
 
 export interface McpPublishedToolOptions {
-  // 这是远程 tools/list 的边界对象，尚未附加本地 effect 或暴露名称。
+  // This is the boundary object of remote tools/list, without local effect or exposed name attached yet.
   readonly name: string;
   readonly description?: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
 }
 
-// 远程 tools/list 返回的声明；发布前先克隆并冻结，防止外部对象被后续修改。
+// Declarations returned by remote tools/list; clones and freezes before publishing to prevent external objects from being modified later.
 export class McpPublishedTool {
   readonly name: string;
   readonly description: string | undefined;
   readonly inputSchema: Readonly<Record<string, unknown>>;
 
   constructor(options: McpPublishedToolOptions) {
-    // schema 深克隆并冻结，避免 MCP SDK 或测试 double 在发布后改写定义。
+    // Deep clone and freeze schema to prevent MCP SDK or test doubles mutating definitions after publication.
     if (typeof options.name !== "string" || options.name.trim().length === 0) {
       throw new McpContractError("Published MCP tool name must not be empty");
     }
@@ -172,7 +172,7 @@ export class McpPublishedTool {
 }
 
 export interface McpCallResultOptions {
-  // content 保留协议块，structuredContent 可缺省为 null，isError 表示远程业务失败。
+  // content preserves protocol blocks, structuredContent defaults to null, and isError indicates remote business failure.
   readonly content: readonly Readonly<Record<string, unknown>>[];
   readonly structuredContent: Readonly<Record<string, unknown>> | null;
   readonly isError: boolean;
@@ -184,7 +184,7 @@ export class McpCallResult {
   readonly isError: boolean;
 
   constructor(options: McpCallResultOptions) {
-    // 远程结果在进入 Agent 工具边界前完成形状校验和深冻结。
+    // Remote results complete shape validation and deep freezing before entering the Agent tool boundary.
     if (!Array.isArray(options.content) || !options.content.every((block) => isRecord(block))) {
       throw new McpContractError("MCP call content must contain objects");
     }
@@ -207,7 +207,7 @@ export class McpCallResult {
 }
 
 export interface McpConnection {
-  // 连接抽象只暴露 tools/list、tools/call、终态通知与关闭，不泄露具体 SDK client。
+  // The connection abstraction exposes only tools/list, tools/call, final state notification, and close, without leaking specific SDK clients.
   listTools(options?: { readonly signal?: AbortSignal }): Promise<readonly McpPublishedTool[]>;
   callTool(
     name: string,
@@ -219,24 +219,24 @@ export interface McpConnection {
 }
 
 export interface McpConnectionFactory {
-  // 工厂只有在 initialize 成功后返回连接；失败连接的清理由适配器负责。
+  // The factory returns connections only after initialize succeeds; adapters handle cleaning up failed connections.
   open(spec: McpServerSpec, signal?: AbortSignal): Promise<McpConnection>;
 }
 
 interface ConnectionState {
-  // spec、connection 与其已注册 definitions 必须作为一个 alias 级状态单元迁移。
+  // spec, connection, and their registered definitions must transition as a single alias-level state unit.
   readonly spec: McpServerSpec;
   readonly connection: McpConnection;
   readonly definitions: readonly StoredToolDefinition[];
 }
 
 class PublishFailure extends Error {
-  // 只携带允许暴露给模型的稳定 code/message，不包含远程 schema 或进程细节。
+  // Carry only stable code/message exposed to the model, excluding remote schema or process details.
   readonly code: string;
   readonly publicMessage: string;
 
   constructor(code: string, publicMessage: string) {
-    // 内部异常与工具错误使用同一公开消息，避免边界转换时意外泄密。
+    // Internal exceptions and tool errors share the same public message, preventing accidental leaks during boundary conversion.
     super(publicMessage);
     this.name = "PublishFailure";
     this.code = code;
@@ -244,13 +244,13 @@ class PublishFailure extends Error {
   }
 }
 
-// 连接状态变更串行化：connect、disconnect、close 不会在并发调用中互相覆盖。
+// Connection state changes are serialized: connect, disconnect, and close do not overwrite each other during concurrent calls.
 class AsyncMutex {
-  // Promise 尾链串行化状态操作；网络关闭在锁外执行，避免长 I/O 占用临界区。
+  // Promise tail chain serializes state operations; network shutdown executes outside locks to prevent long I/O from blocking critical sections.
   #tail: Promise<void> = Promise.resolve();
 
   async run<Result>(operation: () => Promise<Result> | Result): Promise<Result> {
-    // 每个调用等待前一 gate，finally 必须释放本 gate，失败也不能阻塞后续操作。
+    // Each call waits for the previous gate and finally releases its own gate so failure does not block subsequent operations.
     const previous = this.#tail;
     const gate = createReleaseGate();
     this.#tail = gate.promise;
@@ -264,7 +264,7 @@ class AsyncMutex {
 }
 
 function createReleaseGate(): { readonly promise: Promise<void>; readonly release: () => void } {
-  // 把 Promise 的 resolve 保存为显式 release，供互斥尾链在 finally 中推进。
+  // Save Promise resolve as an explicit release for mutex tail chains to advance in finally.
   let release: (() => void) | undefined;
   const promise = new Promise<void>((resolve) => {
     release = resolve;
@@ -277,14 +277,14 @@ const aliasInputSchema = z.strictObject({
   alias: z.string().min(1).max(32).regex(ALIAS_PATTERN),
 });
 
-// MCP 运行时把远程能力发布为受策略约束的本地工具，并集中管理连接生命周期。
+// MCP runtime publishes remote capabilities as policy-constrained local tools and centrally manages connection lifecycles.
 export class McpRuntime {
-  // servers 是启动 allowlist；connections 只保存已完成“发现 + 注册”的活动连接。
+  // servers is the startup allowlist; connections holds only active connections that finished "discovery + registration".
   readonly #servers: ReadonlyMap<string, McpServerSpec>;
   readonly #connectionFactory: McpConnectionFactory;
   readonly #schemaValidator: McpSchemaValidator;
   readonly #connections = new Map<string, ConnectionState>();
-  // 已从 registry 撤销、但 connection.close() 尚未成功的对象；Runner 逆序关闭时兜底重试。
+  // Objects revoked from registry whose connection.close() has not yet succeeded; fallback retry when Runner closes in reverse order.
   readonly #pendingCloses: McpConnection[] = [];
   readonly #lock = new AsyncMutex();
   readonly #leadToolDefinitions: readonly [
@@ -300,7 +300,7 @@ export class McpRuntime {
     readonly connectionFactory: McpConnectionFactory;
     readonly schemaValidator: McpSchemaValidator;
   }) {
-    // 构造时只建立静态 server/spec 与管理工具；动态远程工具必须等待 install + connect。
+    // Establish only static server/spec and management tools at construction; dynamic remote tools must await install + connect.
     if (!Array.isArray(options.servers) || options.servers.length === 0) {
       throw new McpContractError("MCP runtime requires at least one server spec");
     }
@@ -345,17 +345,17 @@ export class McpRuntime {
   }
 
   get connectedAliases(): readonly string[] {
-    // 返回当前活动连接快照，调用方不能修改内部 Map。
+    // Returns a snapshot of current active connections; callers cannot modify the internal Map.
     return Object.freeze([...this.#connections.keys()]);
   }
 
   get serverAliases(): readonly string[] {
-    // 返回本地允许连接的全部 alias，不代表这些 server 已连接。
+    // Returns all aliases permitted to connect locally; this does not mean these servers are connected.
     return Object.freeze([...this.#servers.keys()]);
   }
 
   get isClosed(): boolean {
-    // 仅当所有连接关闭成功后才为 true；closeRequested 可更早阻止新连接。
+    // True only after all connections close successfully; closeRequested blocks new connections earlier.
     return this.#closed;
   }
 
@@ -363,26 +363,26 @@ export class McpRuntime {
     ToolDefinition<z.infer<typeof aliasInputSchema>>,
     ToolDefinition<z.infer<typeof aliasInputSchema>>,
   ] {
-    // connect/disconnect 只交给 Lead；远程工具由连接成功后动态加入同一 registry。
+    // Only Lead handles connect/disconnect; remote tools dynamically join the same registry after connecting successfully.
     return this.#leadToolDefinitions;
   }
 
   install(registry: ToolRegistry): void {
-    // 运行时与一个可变注册表一一绑定，重复安装会破坏 definitions 的对象身份撤销语义。
+    // The runtime binds one-to-one with a mutable registry. Repeated installation breaks object identity revocation semantics of definitions.
     if (this.#registry !== undefined) {
       throw new McpContractError("MCP runtime is already installed");
     }
     if (this.#closeRequested || this.#closed) {
       throw new McpContractError("MCP runtime cannot be installed after close");
     }
-    // 只给 Lead registry 安装连接管理工具；远程工具要等 connect 成功后才动态发布。
+    // Install connection management tools only in the Lead registry; publish remote tools dynamically after connect succeeds.
     registry.registerMany(this.#leadToolDefinitions);
     this.#registry = registry;
   }
 
   async close(): Promise<void> {
-    // 关闭先在锁内撤销全部模型可见工具，再逆连接顺序回收 stdio 资源；
-    // 关闭失败的连接保留在 pendingCloses，允许上层再次调用 close 重试。
+    // Shutdown revokes all model-visible tools inside lock first, then reclaims stdio resources in reverse connection order;
+    // Connections that fail to close remain in pendingCloses, allowing upper layers to call close again to retry.
     const connections = await this.#lock.run(async () => {
       if (this.#closed) return [] as McpConnection[];
       this.#closeRequested = true;
@@ -394,7 +394,7 @@ export class McpRuntime {
       result.push(...this.#pendingCloses.splice(0));
       return result;
     });
-    // 先撤销 definitions，再在锁外关闭连接，避免长 I/O 阻塞后续状态操作。
+    // Revokes definitions first, then closes connection outside lock to avoid long I/O blocking subsequent state operations.
     const failures: unknown[] = [];
     for (const connection of connections) {
       try {
@@ -410,8 +410,8 @@ export class McpRuntime {
   }
 
   async #connect(alias: string): Promise<ToolResult> {
-    // alias 级连接是事务式发布：open、tools/list、policy/schema 校验和批量注册
-    // 全部成功后才写入 #connections，任一步失败都尝试关闭临时连接。
+    // Alias-level connection is a transactional publication: open, tools/list, policy/schema validation, and batch registration
+    // Writes to #connections only after total success; any failure attempts to close temporary connections.
     return await this.#lock.run(async () => {
       if (this.#closeRequested || this.#closed) {
         return toolError("mcp_runtime_closed", "MCP runtime is closing or closed");
@@ -427,7 +427,7 @@ export class McpRuntime {
         );
       }
 
-      // 事务式发布：发现和注册全部成功后才记录连接状态，任一步失败都关闭 connection。
+      // Transactional publishing: records connection state only after discovery and registration succeed; any failure closes the connection.
       let connection: McpConnection;
       try {
         connection = await this.#connectionFactory.open(spec);
@@ -464,7 +464,7 @@ export class McpRuntime {
       }
       const state = { spec, connection, definitions };
       this.#connections.set(alias, state);
-      // 连接状态与 definitions 已同时可见；此后的 transport 故障统一由 Watchdog 撤销。
+      // Connection state and definitions are visible simultaneously; subsequent transport failures are revoked uniformly by Watchdog.
       void this.#watchConnection(alias, state);
       return toolSuccess(
         jsonText({
@@ -477,7 +477,7 @@ export class McpRuntime {
   }
 
   async #disconnect(alias: string): Promise<ToolResult> {
-    // 断开先在锁内删除状态和 definitions，再在锁外关闭传输，保证模型立即失去该能力。
+    // Disconnect removes state and definitions inside the lock, then closes transport outside the lock. This ensures the model loses capability immediately.
     const state = await this.#lock.run(async () => {
       if (this.#closeRequested || this.#closed) return undefined;
       if (!this.#servers.has(alias)) return null;
@@ -494,7 +494,7 @@ export class McpRuntime {
     if (state === false) {
       return toolError("mcp_not_connected", `MCP server alias is not connected: ${alias}`);
     }
-    // 先撤销 definitions 再关连接；即使 close 失败，模型也看不到已断开的远程工具。
+    // Revokes definitions before closing connection; even if close fails, model cannot see disconnected remote tools.
     try {
       await state.connection.close();
     } catch {
@@ -517,8 +517,8 @@ export class McpRuntime {
     spec: McpServerSpec,
     published: readonly McpPublishedTool[],
   ): readonly ToolDefinition<Record<string, unknown>>[] {
-    // 把远程声明与本地 policy 做精确集合匹配，再生成带 alias、effect、schema 和 source 的本地定义。
-    // Published 集合必须与 policy 精确匹配，未声明和多余的工具都拒绝发布。
+    // Match remote declarations against local policies with exact sets, then generate local definitions with alias, effect, schema, and source.
+    // Published set must match policy exactly; undeclared and redundant tools are rejected from publishing.
     if (!Array.isArray(published) || !published.every((tool) => tool instanceof McpPublishedTool)) {
       throw new PublishFailure(
         "mcp_invalid_tool_list",
@@ -583,7 +583,7 @@ export class McpRuntime {
   }
 
   async #watchConnection(alias: string, state: ConnectionState): Promise<void> {
-    // 连接级 Watchdog：transport 终止后撤销该 alias 的动态工具，避免失效工具继续暴露。
+    // Connection-level Watchdog: Revokes dynamic tools of the alias after transport termination to prevent invalid tools from remaining exposed.
     await state.connection.waitForFailure();
     await this.#dropFailedConnection(alias, state);
   }
@@ -593,7 +593,7 @@ export class McpRuntime {
     remoteName: string,
     argumentsValue: Readonly<Record<string, unknown>>,
   ): Promise<ToolResult> {
-    // 每次调用先读取当前 alias 状态；超时/传输错误撤销整条连接，远程 isError 仅影响本次结果。
+    // Read current alias state first on each call; timeout or transport errors revoke the entire connection, while remote isError only affects this result.
     const state = await this.#lock.run(() => this.#connections.get(alias));
     if (state === undefined) {
       return remoteError(
@@ -603,7 +603,7 @@ export class McpRuntime {
         "MCP server is no longer connected",
       );
     }
-    // 超时或 transport 故障视为连接失效；业务 isError 只返回固定脱敏结果，不泄露服务端细节。
+    // Treat timeouts or transport failures as connection loss; business isError returns fixed redacted results without leaking server details.
     let result: McpCallResult;
     try {
       result = await state.connection.callTool(remoteName, argumentsValue, {
@@ -640,7 +640,7 @@ export class McpRuntime {
   }
 
   async #dropFailedConnection(alias: string, state: ConnectionState): Promise<void> {
-    // 先核对对象身份，避免旧连接状态误删重连后的新 definitions。
+    // Checks object identity first to prevent old connection state from accidentally deleting new definitions after reconnect.
     const current = await this.#lock.run(async () => {
       const existing = this.#connections.get(alias);
       if (existing !== state) return undefined;
@@ -657,7 +657,7 @@ export class McpRuntime {
   }
 
   async #closeFailedConnection(connection: McpConnection): Promise<boolean> {
-    // 连接尚未发布时的清理辅助；失败对象进入 pendingCloses，由统一 close 再次回收。
+    // Cleanup helper when the connection is not yet published; failed objects enter pendingCloses and are reclaimed again by unified close.
     try {
       await connection.close();
       return true;
@@ -668,14 +668,14 @@ export class McpRuntime {
   }
 
   #rememberPendingClose(connection: McpConnection): void {
-    // 按对象身份去重，避免同一个 connection 被多次加入关闭队列。
+    // Deduplicate by object identity to prevent adding the same connection to the close queue multiple times.
     if (!this.#pendingCloses.some((existing) => existing === connection)) {
       this.#pendingCloses.push(connection);
     }
   }
 
   #requireRegistry(): ToolRegistry {
-    // 所有动态注册/撤销都要求先 install；缺失注册表属于组合根契约错误。
+    // All dynamic registrations/revocations require install first; missing registries are composition root contract errors.
     if (this.#registry === undefined) {
       throw new McpContractError("MCP runtime is not installed in a registry");
     }
@@ -683,7 +683,7 @@ export class McpRuntime {
   }
 
   #connectionError(alias: string, error: unknown, operation: string): ToolResult {
-    // 只转换已知 MCP 边界错误，未知异常继续抛出，避免掩盖编程错误。
+    // Convert only known MCP boundary errors; rethrow unknown exceptions to avoid masking programming errors.
     if (error instanceof McpTimeoutError) {
       return toolError("mcp_connect_timeout", `MCP server ${operation} timed out: ${alias}`);
     }
@@ -695,7 +695,7 @@ export class McpRuntime {
 }
 
 function exposedToolName(alias: string, remoteName: string): string {
-  // 本地名统一为 mcp__alias__normalized，从名称上隔离不同 server 的同名远程工具。
+  // Local names normalize to mcp__alias__normalized to isolate same-named remote tools from different servers.
   const normalized = remoteName
     .trim()
     .toLowerCase()
@@ -719,7 +719,7 @@ function exposedToolName(alias: string, remoteName: string): string {
 }
 
 function validatedDescription(alias: string, tool: McpPublishedTool): string {
-  // 空描述使用本地可控文案，非空描述限制长度后原样保留。
+  // Empty descriptions use local controlled text; non-empty descriptions are retained as-is after length limiting.
   if (tool.description === undefined || tool.description.trim().length === 0) {
     return `MCP tool ${tool.name} published by server alias ${alias}.`;
   }
@@ -733,7 +733,7 @@ function validatedDescription(alias: string, tool: McpPublishedTool): string {
 }
 
 function remoteError(alias: string, remoteName: string, code: string, message: string): ToolResult {
-  // 远端错误只保留 code/message/alias 等可控字段，服务器私有内容不进入模型上下文。
+  // Remote errors retain only controllable fields like code/message/alias; server private content does not enter model context.
   return {
     content: jsonText({
       error: { code, message },
@@ -747,22 +747,22 @@ function remoteError(alias: string, remoteName: string, code: string, message: s
 }
 
 function jsonText(value: unknown): string {
-  // MCP 工具统一返回 JSON 文本，使 alias、状态和错误码保持结构化。
+  // MCP tools uniformly return JSON text to keep alias, status, and error code structured.
   return JSON.stringify(value);
 }
 
 function isEffect(value: unknown): value is McpToolPolicyOptions["effect"] {
-  // effect 集合与核心权限系统保持一致，远程不能扩展任意权限类别。
+  // The effect set stays consistent with the core permission system; remote tools cannot add arbitrary permission classes.
   return value === "read" || value === "write" || value === "execute" || value === "external";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  // MCP JSON 对象边界排除 null 与数组。
+  // MCP JSON object boundary excludes null and arrays.
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cloneJson<T>(value: T): T {
-  // JSON 往返既复制对象也拒绝函数、循环引用和 undefined 根值。
+  // JSON round-trip copies objects and rejects functions, circular references, and undefined root values.
   try {
     const serialized = JSON.stringify(value);
     if (serialized === undefined) throw new Error("value is not JSON serializable");
@@ -773,7 +773,7 @@ function cloneJson<T>(value: T): T {
 }
 
 function freezeJsonObject<T extends Record<string, unknown>>(value: T): Readonly<T> {
-  // 递归冻结协议对象，阻止发布或调用后被外部引用修改。
+  // Recursively freezes protocol objects to prevent modification by external references after publishing or calling.
   for (const nested of Object.values(value)) {
     if (isRecord(nested)) freezeJsonObject(nested);
     if (Array.isArray(nested)) freezeJsonArray(nested);
@@ -782,7 +782,7 @@ function freezeJsonObject<T extends Record<string, unknown>>(value: T): Readonly
 }
 
 function freezeJsonArray(value: unknown[]): readonly unknown[] {
-  // 数组与其中的对象/子数组使用同一深冻结规则。
+  // Arrays and their nested objects or subarrays use the same deep freeze rule.
   for (const nested of value) {
     if (isRecord(nested)) freezeJsonObject(nested);
     if (Array.isArray(nested)) freezeJsonArray(nested);
@@ -791,7 +791,7 @@ function freezeJsonArray(value: unknown[]): readonly unknown[] {
 }
 
 export function isMcpToolDefinition(definition: unknown): definition is ToolDefinition<unknown> {
-  // 测试和组合层只需识别工具定义的最小可调用形状。
+  // Tests and the composition layer only need to identify the minimum callable shape of the tool definition.
   return (
     typeof definition === "object" &&
     definition !== null &&
@@ -801,6 +801,6 @@ export function isMcpToolDefinition(definition: unknown): definition is ToolDefi
 }
 
 export function isMcpManagementCall(call: ToolCall): boolean {
-  // 管理调用用于区分连接生命周期命令与动态远程工具调用。
+  // Management calls distinguish connection lifecycle commands from dynamic remote tool calls.
   return call.name === "connect_mcp" || call.name === "disconnect_mcp";
 }

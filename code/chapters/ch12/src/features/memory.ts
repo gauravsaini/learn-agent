@@ -18,40 +18,40 @@ import {
 import type { ChatMessage, ToolCall } from "../core/messages.js";
 import type { ModelClient } from "../core/model.js";
 
-// memory.ts 负责第 9 章的文件级记忆：安全记录、manifest 权威集合、模型 side-query 与回合生命周期。
+// memory.ts handles Chapter 9 file-level memory: safe recording, authoritative manifest set, model side-queries, and turn lifecycles.
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MEMORY_FILENAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 const CJK_RUN_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff]+/gu;
-// 单条记忆和派生目录都设预算，避免“记忆文件”反向把上下文撑爆。
+// Set budgets for single memories and derived catalogs to prevent memory files from blowing up the context.
 const MAX_MEMORY_LINES = 200;
 const MAX_MEMORY_BYTES = 4_096;
-// 锁参数：短重试避免忙等，stale/update 交给 proper-lockfile 处理崩溃遗留锁。
+// Lock parameters: Short retries avoid busy-waiting, while stale/update leave leftover crash locks to proper-lockfile.
 const LOCK_RETRY_MS = 10;
 const LOCK_STALE_MS = 30_000;
 const LOCK_UPDATE_MS = 10_000;
 const MAX_WINDOWS_LOCK_RACE_RETRIES = 100;
-// 进程内互斥尾链：同进程并发回合先排队，再尝试跨进程文件锁。
+// In-process mutex tail chain: Concurrent turns in the same process queue first before attempting cross-process file locks.
 const PROCESS_LOCK_TAILS = new Map<string, Promise<void>>();
 
-// 三个 side-query 输出都直接进入 JSON.parse()，不做围栏剥离或子串截取；
-// 因此系统提示必须明确禁止 Markdown 代码块和解释文字，降低真实模型附加围栏的概率。
+// All three side-query outputs pass directly into JSON.parse(), without fence stripping or substring extraction;
+// Therefore the system prompt must explicitly forbid Markdown code fences and explanations to reduce the likelihood of models adding fences.
 const NO_FENCE_INSTRUCTION =
-  "直接输出纯 JSON 文本，禁止使用 Markdown 代码块或反引号包裹，禁止输出任何解释文字。";
-const SELECTOR_SYSTEM_PROMPT = `从目录中选择与查询直接相关的记忆名称。
-只能返回 JSON 字符串数组，不得调用工具；没有相关项时返回 []。
+  "Output pure JSON text directly. Do not wrap with Markdown code blocks or backticks. Do not output any explanatory text.";
+const SELECTOR_SYSTEM_PROMPT = `Select memory names directly related to query from catalog.
+Must return only a JSON array of strings, do not call tools; returns [] when there are no relevant items.
 ${NO_FENCE_INSTRUCTION}`;
-const EXTRACTOR_SYSTEM_PROMPT = `从会话中提取值得跨会话保留的新记忆。
-只能返回 JSON 数组，不得调用工具。每项必须且只能包含 name、type、description、body；
-type 只能是 user、feedback、project、reference，没有新记忆时返回 []。
-name 必须是安全的小写 slug：只能包含小写字母、数字，多个词之间用单个连字符 - 分隔，禁止下划线、空格、大写字母或中文字符。
+const EXTRACTOR_SYSTEM_PROMPT = `Extract new memories from conversation that are worth keeping across sessions.
+Must return only a JSON array, do not call tools. Each item must strictly and only contain name, type, description, and body;
+type can only be user, feedback, project, or reference; returns [] when there are no new memories.
+name must be a safe lowercase slug: only lowercase letters and digits are allowed; separate multiple words with a single hyphen -; no underscores, spaces, uppercase letters, or Chinese characters.
 ${NO_FENCE_INSTRUCTION}`;
-const CONSOLIDATOR_SYSTEM_PROMPT = `整理给定记忆，合并重复或冲突内容，不得调用工具。
-只能返回 JSON object，必须且只能包含 source_names 和 records；
-source_names 是被替换的原记忆名称，records 是非空的新记忆数组。
+const CONSOLIDATOR_SYSTEM_PROMPT = `Consolidate given memories, merge duplicate or conflicting content, do not call tools.
+Must return only a JSON object, containing strictly and only source_names and records;
+source_names are replaced original memory names, and records is a non-empty array of new memories.
 ${NO_FENCE_INSTRUCTION}`;
 
 export class MemoryStoreError extends Error {
-  // 文件记忆的名称、索引和正文必须作为一个受锁保护的持久化集合维护。
+  // Maintain names, indexes, and bodies of file memories as a persistent collection protected by locks.
   override readonly name: string = "MemoryStoreError";
 }
 
@@ -62,18 +62,18 @@ export const MemoryType = Object.freeze({
   REFERENCE: "reference",
 } as const);
 
-// 记忆类别用于选择和整理阶段的稳定路由，不允许模型写入其他类型。
+// Memory category is used for stable routing during selection and consolidation; models cannot write other types.
 export type MemoryType = (typeof MemoryType)[keyof typeof MemoryType];
 
-// MemoryRecord 是不可变值对象；名称直接决定文件名，因此先做安全 slug 校验再落盘。
+// MemoryRecord is an immutable value object; name directly determines file name, so it validates safe slug rules before persisting to disk.
 export interface MemoryRecordOptions {
-  // slug 同时作为逻辑名称和文件名的一部分，必须保持稳定且安全。
+  // slug serves as both logical name and part of the file name; it must remain stable and safe.
   readonly name: string;
-  // 目录索引展示的一行摘要。
+  // A single-line summary displayed in the catalog index.
   readonly description: string;
-  // 便于按用户偏好、反馈、项目或参考资料分类。
+  // Convenient for categorizing by user preference, feedback, project, or reference materials.
   readonly kind: MemoryType;
-  // 记忆正文，序列化前会统一换行并执行大小预算。
+  // Memory body, with line breaks normalized and size budget enforced before serialization.
   readonly body: string;
 }
 
@@ -126,7 +126,7 @@ export interface MemoryConsolidator {
   consolidate(records: readonly MemoryRecord[]): Promise<string>;
 }
 
-// 选择、提取、整理都通过同一个无工具模型边界调用，输出必须是完整 JSON/文本。
+// Selection, extraction, and consolidation are all called through the same tool-free model boundary; output must be complete JSON/text.
 export class ModelMemoryQueries implements MemorySelector, MemoryExtractor, MemoryConsolidator {
   readonly #model: ModelClient;
 
@@ -163,7 +163,7 @@ export class ModelMemoryQueries implements MemorySelector, MemoryExtractor, Memo
   }
 
   async #complete(messages: readonly ChatMessage[]): Promise<string> {
-    // 三个 memory side-query 都强制无工具、stop 和非空完整文本；JSON 解析交给调用方。
+    // All three memory side-queries enforce no tools, stop, and non-empty full text; callers handle JSON parsing.
     const reply = await this.#model.complete(
       Object.freeze({ messages: Object.freeze([...messages]), tools: Object.freeze([]) }),
     );
@@ -193,7 +193,7 @@ interface ConsolidationPlan {
   readonly records: readonly MemoryRecord[];
 }
 
-// 持久文件三份：manifest 是权威指针，MEMORY.md 是可重建目录，*.md 存正文；.lock 仅用于跨进程互斥。
+// Three persistent files: manifest is the authoritative pointer, MEMORY.md is the rebuildable catalog, and *.md stores content; .lock is used only for cross-process mutexes.
 interface MemoryStorePaths {
   readonly workspace: string;
   readonly root: string;
@@ -203,13 +203,13 @@ interface MemoryStorePaths {
 }
 
 export interface MemoryStoreOptions {
-  // 所有 .memory 文件都归属于此工作区，不能跨工作区读取。
+  // All .memory files belong to this workspace; cannot read across workspaces.
   readonly workspace: string;
-  // 生成记录文件后缀的 slug 工厂，可在测试中固定。
+  // A slug factory that generates record file suffixes, which tests can fix.
   readonly idGenerator?: () => string;
-  // 派生 MEMORY.md 索引的行数上限。
+  // Upper bound of line count for the derived MEMORY.md index.
   readonly maxIndexLines?: number;
-  // 派生 MEMORY.md 索引的 UTF-8 字节上限。
+  // Upper bound of UTF-8 bytes for the derived MEMORY.md index.
   readonly maxIndexBytes?: number;
 }
 
@@ -220,9 +220,9 @@ export interface ApplyConsolidationOptions {
   readonly replacements: readonly MemoryRecord[];
 }
 
-// MemoryStore 是记忆集合的唯一事务入口，所有读改写都通过进程内队列与文件锁串行。
+// MemoryStore is the sole transactional entry point for the memory collection; all read-modify-writes serialize via in-process queue and file locks.
 export class MemoryStore {
-  // 存取均经进程内互斥和跨进程文件锁，避免并发回合破坏索引与记录一致性。
+  // Access passes through in-process mutexes and cross-process file locks to prevent concurrent turns from corrupting index and record consistency.
   readonly #workspaceInput: string;
   readonly #idGenerator: () => string;
   readonly #maxIndexLines: number;
@@ -246,9 +246,9 @@ export class MemoryStore {
     this.#maxIndexBytes = maxIndexBytes;
   }
 
-  // 读取记录：根目录不存在视为空集合，存在时先校验边界，再在锁内按 manifest 加载。
+  // Read records: treat missing root directory as empty collection; if present, validate boundary first, then load by manifest within lock.
   async records(): Promise<readonly MemoryRecord[]> {
-    // 读取入口：目录不存在时视为空集合；存在时必须先校验根目录，再在锁内按 manifest 重读集合。
+    // Read entry point: treat missing directory as empty collection; if present, validate root directory first, then reread collection by manifest within lock.
     const paths = await this.#resolvePaths();
     if (!(await pathExists(paths.root))) {
       return Object.freeze([]);
@@ -259,9 +259,9 @@ export class MemoryStore {
     );
   }
 
-  // 渲染目录：只读取轻量索引，不把正文拼进模型上下文。
+  // Render directory: read only lightweight indices, and do not concatenate bodies into the model context.
   async renderCatalog(): Promise<string> {
-    // 目录入口只返回 name、文件名和单行描述，selector 不直接读取全部正文。
+    // Directory entries only return name, file name, and single-line description; the selector does not read full bodies directly.
     const paths = await this.#resolvePaths();
     if (!(await pathExists(paths.root))) {
       return "";
@@ -276,9 +276,9 @@ export class MemoryStore {
     await this.extend([record]);
   }
 
-  // 新增记忆：先拒绝重名，再独占写正文文件，最后原子提交 manifest 和 MEMORY.md。
+  // Add memory: reject duplicate names first, write the body exclusively, and finally atomically commit manifest and MEMORY.md.
   async extend(records: readonly MemoryRecord[]): Promise<void> {
-    // extend() 只追加新名称；同一名称重复写入会在锁内失败，避免静默覆盖已有记忆。
+    // extend() appends new names only; duplicate writes of the same name fail within the lock to avoid silently overwriting existing memories.
     const validated = validateRecordCollection(records, true);
     if (validated.length === 0) {
       return;
@@ -328,9 +328,9 @@ export class MemoryStore {
     });
   }
 
-  // 合并记忆：先校验 base 未漂移，再写新文件并提交，成功后才删除被替换的旧文件。
+  // Merge memories: verify base has not drifted, write and commit new files, and delete replaced old files only after success.
   async applyConsolidation(options: ApplyConsolidationOptions): Promise<void> {
-    // 整理事务：先在锁内重读 manifest，发现 baseRecords 已变化立即失败；提交后才清理被替换的旧文件。
+    // Compaction transaction: reread manifest in the lock and fail immediately if baseRecords changed; clean up replaced old files only after commit.
     const base = validateRecordCollection(options.baseRecords, true);
     const additions = validateRecordCollection(options.additions, true);
     const replacements = validateRecordCollection(options.replacements, false);
@@ -380,7 +380,7 @@ export class MemoryStore {
     });
   }
 
-  // 每次操作先通过 realpath 固定 workspace，再在 .memory 下构造路径，避免相对路径漂移。
+  // Fix the workspace with realpath first before constructing paths under .memory to prevent relative path drift.
   async #resolvePaths(): Promise<MemoryStorePaths> {
     const workspace = await realpath(this.#workspaceInput);
     if (!(await stat(workspace)).isDirectory()) {
@@ -416,14 +416,14 @@ export class MemoryStore {
     }
   }
 
-  // 两层锁：进程内 mutex 排队同进程任务，proper-lockfile 在跨进程间串行文件事务。
+  // Two layers of locks: in-process mutex queues tasks in the same process, and proper-lockfile serializes file transactions across processes.
   async #withLock<T>(paths: MemoryStorePaths, operation: () => Promise<T>): Promise<T> {
     return await withProcessMutex(paths.root, async () =>
       this.#withCrossProcessLock(paths, operation),
     );
   }
 
-  // .lock 由 proper-lockfile 管理；stale/update 参数负责崩溃后的锁恢复。
+  // .lock is managed by proper-lockfile; stale/update parameters handle lock recovery after crashes.
   async #withCrossProcessLock<T>(paths: MemoryStorePaths, operation: () => Promise<T>): Promise<T> {
     let release: () => Promise<void>;
     let windowsRaceRetries = 0;
@@ -459,7 +459,7 @@ export class MemoryStore {
     }
   }
 
-  // 文件名追加唯一 ID，使提交新集合时不会覆盖同一名称的旧记录文件。
+  // Append a unique ID to file names so submitting new collections does not overwrite older records of the same name.
   #newFilename(name: string): string {
     const identifier = this.#idGenerator();
     if (typeof identifier !== "string" || !SLUG_PATTERN.test(identifier)) {
@@ -472,7 +472,7 @@ export class MemoryStore {
     paths: MemoryStorePaths,
     records: readonly StoredMemory[],
   ): Promise<readonly string[]> {
-    // 用 "wx" 独占创建记录文件，写入并 fsync 后回读校验，失败时清理本轮文件。
+    // Use "wx" to create the record file exclusively, write and fsync, then read back to validate, cleaning up files on failure.
     const written: string[] = [];
     try {
       for (const item of records) {
@@ -512,7 +512,7 @@ export class MemoryStore {
     records: readonly StoredMemory[],
     index: string,
   ): Promise<void> {
-    // 先原子替换可重建的 MEMORY.md，再原子替换权威 manifest；失败时回滚索引。
+    // Atomically replaces rebuildable MEMORY.md first, then atomically replaces authoritative manifest; rolls back index on failure.
     const manifest = Buffer.from(
       JSON.stringify({ version: 1, files: records.map((item) => item.filename) }),
       "utf8",
@@ -532,7 +532,7 @@ export class MemoryStore {
   }
 
   async #loadStored(paths: MemoryStorePaths): Promise<readonly StoredMemory[]> {
-    // 读取端不信任目录扫描，而是重新校验 manifest、文件名、realpath 与每条记录。
+    // The read end does not trust directory scans, re-validating manifest, file name, realpath, and each record instead.
     if (!(await pathExists(paths.manifest))) {
       return Object.freeze([]);
     }
@@ -583,7 +583,7 @@ export class MemoryStore {
   }
 
   #renderIndex(records: readonly StoredMemory[]): string {
-    // MEMORY.md 只保留名称、文件名和单行描述，作为 selector 的轻量目录。
+    // MEMORY.md retains only name, file name, and single-line description as a lightweight catalog for selector.
     if (records.length > this.#maxIndexLines) {
       throw new MemoryStoreError("memory index exceeds the index line limit");
     }
@@ -598,7 +598,7 @@ export class MemoryStore {
   }
 }
 
-// MemorySession 把 MemoryStore 包装成 AgentRunner 可调用的回合生命周期。
+// MemorySession wraps MemoryStore into a turn lifecycle callable by AgentRunner.
 export interface MemorySessionOptions {
   readonly store: MemoryStore;
   readonly selector?: MemorySelector;
@@ -610,7 +610,7 @@ export interface MemorySessionOptions {
 }
 
 export class MemorySession {
-  // 生命周期在回合前选择相关记忆、回合后提取并合并，模型不会直接写文件。
+  // The lifecycle selects relevant memories before a turn, extracts and merges them after a turn, and the model never writes files directly.
   readonly #store: MemoryStore;
   readonly #selector: MemorySelector | undefined;
   readonly #extractor: MemoryExtractor | undefined;
@@ -618,9 +618,9 @@ export class MemorySession {
   readonly #maxSelected: number;
   readonly #consolidateThreshold: number;
   readonly #emitContextMessages: boolean;
-  // 当前回合选中的只读快照；下一回合 beginTurn 会完全替换。
+  // Read-only snapshot selected for the current turn; next turn beginTurn will replace completely.
   #selected: readonly MemoryRecord[] = Object.freeze([]);
-  // 记忆 side-query 或持久化失败只记录在此，不阻断主 Agent 回答。
+  // Memory side-query or persistence failures are only logged here and do not block the main Agent response.
   #lastError: string | undefined;
 
   constructor(options: MemorySessionOptions) {
@@ -647,8 +647,8 @@ export class MemorySession {
     return this.#lastError;
   }
 
-  // 回合开始先读当前集合；模型选择失败时使用确定性关键词回退，不让记忆问题中断主任务。
-  // 回合前选择相关记忆；模型选择失败时退回确定性关键词匹配。
+  // Read the current set at turn start; fall back to deterministic keywords when model selection fails to prevent memory issues from interrupting main tasks.
+  // Select relevant memories before the turn; fall back to deterministic keyword matching when model selection fails.
   async beginTurn(query: string): Promise<void> {
     const records = await this.#store.records();
     this.#selected = Object.freeze([]);
@@ -682,7 +682,7 @@ export class MemorySession {
     this.#selected = keywordSelect(query, records, this.#maxSelected);
   }
 
-  // 只把选中记忆作为 system context 附加到下一次模型请求，不写入 canonical history。
+  // Attach selected memories only as system context to the next model request; do not write to canonical history.
   beforeModel(): readonly ChatMessage[] {
     if (!this.#emitContextMessages || this.#selected.length === 0) {
       return Object.freeze([]);
@@ -702,8 +702,8 @@ export class MemorySession {
     return sections.join("\n\n");
   }
 
-  // 回合结束用完整 canonical history 提取；提取、整理或写入失败只记录 lastError，不改变旧集合。
-  // 回合结束从完整 canonical history 提取并追加或整理记忆。
+  // Extract with complete canonical history at turn end; record only lastError on extract, organize, or write failure without modifying the existing set.
+  // Extract, append, or organize memories from complete canonical history at turn end.
   async complete(history: readonly ChatMessage[]): Promise<void> {
     const current = await this.#store.records();
     let candidate = current;
@@ -750,7 +750,7 @@ function isMemoryType(value: unknown): value is MemoryType {
   return Object.values(MemoryType).some((kind) => kind === value);
 }
 
-// 每份记忆是独立 Markdown 文件：frontmatter 提供可检索元数据，正文保存完整细节。
+// Each memory is a separate Markdown file: frontmatter provides searchable metadata and the body stores full details.
 function serializeMemory(record: MemoryRecord): Buffer {
   const metadata = stringifyYaml({
     name: record.name,
@@ -800,7 +800,7 @@ function parseMemory(raw: Buffer): MemoryRecord {
   }
 }
 
-// 预算同时约束序列化和读取后的原文件，手工改大的记忆也会被拒绝。
+// Budget constrains both serialization and original files after reading; manually enlarged memories are also rejected.
 function enforceMemoryBudget(raw: Buffer): void {
   if (countLines(raw) > MAX_MEMORY_LINES) {
     throw new MemoryStoreError(`memory file must not exceed ${MAX_MEMORY_LINES} lines`);
@@ -823,7 +823,7 @@ function stripOuterNewlines(value: string): string {
   return value.replace(/^\n+|\n+$/gu, "");
 }
 
-// 集合级契约：只接受 MemoryRecord 且名称唯一；空集合是否合法由调用场景决定。
+// Collection-level contract: Accepts only MemoryRecord with unique names; whether an empty collection is valid depends on the call scenario.
 function validateRecordCollection(
   records: readonly MemoryRecord[],
   allowEmpty: boolean,
@@ -841,7 +841,7 @@ function validateRecordCollection(
   return Object.freeze([...records]);
 }
 
-// 模型输出必须整体可解析为 JSON，不从代码围栏或解释文本中截取子串。
+// Model output must parse entirely as JSON; do not extract substrings from code fences or explanatory text.
 function parseRecordList(output: string, allowEmpty: boolean): readonly MemoryRecord[] {
   if (typeof output !== "string") {
     throw new MemoryStoreError("memory model output must be a JSON string");
@@ -943,7 +943,7 @@ function parseSelectedNames(output: string): readonly string[] {
   return Object.freeze([...value]);
 }
 
-// 关键词回退只扫描 name/description，不读正文，与 selector 看到的目录预算一致。
+// Keyword fallback scans name/description only and does not read body, matching directory budget seen by selector.
 function keywordSelect(
   query: string,
   records: readonly MemoryRecord[],
@@ -966,7 +966,7 @@ function keywordSelect(
   return Object.freeze(ranked.slice(0, limit).map((item) => item.record));
 }
 
-// 英文按至少 3 个字符的 token，中文按相邻 bigram，让中英文查询都能形成可比较特征。
+// English uses tokens of at least 3 characters, while Chinese uses adjacent bigrams, so both English and Chinese queries produce comparable features.
 function keywordTokens(value: string): ReadonlySet<string> {
   const folded = value.toLowerCase();
   const tokens = new Set((folded.match(/[a-z0-9]+/gu) ?? []).filter((token) => token.length >= 3));
@@ -982,7 +982,7 @@ function keywordTokens(value: string): ReadonlySet<string> {
   return tokens;
 }
 
-// extractor 收到深拷贝后的不可变消息快照，避免调用方后续修改影响提取输入。
+// extractor receives a deep-copied immutable message snapshot to prevent caller modifications affecting extraction input.
 function copyHistory(history: readonly ChatMessage[]): readonly ChatMessage[] {
   if (!Array.isArray(history)) {
     throw new MemoryStoreError("memory extraction history must be an array");
@@ -1015,7 +1015,7 @@ function memoryRecordPayload(record: MemoryRecord): Readonly<Record<string, stri
   });
 }
 
-// 递归按键排序生成稳定 JSON，保证相同对象在不同运行和测试中保持确定输入。
+// Recursively sorts by key to generate stable JSON, ensuring identical objects maintain deterministic input across different runs and tests.
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => stableJson(item)).join(",")}]`;
@@ -1086,7 +1086,7 @@ function compareText(left: string, right: string): number {
   return 0;
 }
 
-// 先写同目录临时文件并 fsync，再 rename 覆盖；读方要么看到旧文件，要么看到完整新文件。
+// Writes sibling temporary file first and fsyncs, then renames to overwrite; readers see either old file or complete new file.
 async function atomicReplace(path: string, content: Buffer): Promise<void> {
   const temporary = join(resolve(path, ".."), `.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
@@ -1109,7 +1109,7 @@ async function removePaths(paths: readonly string[]): Promise<void> {
   await Promise.all(paths.map((path) => rm(path, { force: true })));
 }
 
-// 用 Promise 尾链实现同进程串行；失败也先记录尾链，让后续操作等待事务结束。
+// Use a Promise tail chain for intra-process serialization; record failures in the tail chain so subsequent operations wait for transaction completion.
 async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const previous = PROCESS_LOCK_TAILS.get(key);
   const result = previous === undefined ? operation() : previous.then(operation);
@@ -1139,7 +1139,7 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-// 用相对路径判断 child 是否仍在 parent 内，供 manifest 文件与 .memory 根目录边界校验。
+// Use relative paths to determine if child is inside parent for manifest file and .memory root directory boundary validation.
 function pathIsInside(parent: string, child: string): boolean {
   const pathFromParent = relative(parent, child);
   return pathFromParent === "" || (!pathFromParent.startsWith("..") && !isAbsolute(pathFromParent));
@@ -1149,7 +1149,7 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
 }
 
-// Windows 上 proper-lockfile 的锁文件重命名/删除可能短暂返回这些错误，按固定次数重试。
+// On Windows, proper-lockfile lock file rename or deletion can briefly return these errors; retry a fixed number of times.
 function isWindowsLockRace(error: unknown): boolean {
   return (
     hasErrorCode(error, "EBUSY") || hasErrorCode(error, "ENOTEMPTY") || hasErrorCode(error, "EPERM")

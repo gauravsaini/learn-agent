@@ -8,11 +8,11 @@ import {
 import type { ModelClient, ModelReply, ModelRequest } from "../core/model.js";
 import { CompactionManager } from "./compaction.js";
 
-// 文件职责：提供供应商无关的模型恢复层。RecoveryManager 以一次 logical ModelRequest 为边界，
-// 内部处理 length 续写、prompt-too-long 压缩、429/529 退避与 fallback；
-// 取消和总 deadline 贯穿所有异步操作，每个 typed failure 都是可验证的终止条件。
+// File responsibility: provide a provider-agnostic model recovery layer. RecoveryManager operates with a logical ModelRequest as its boundary.
+// Handles length continuation, prompt-too-long compaction, 429/529 backoff, and fallback internally;
+// Cancellation and total deadlines span all async operations; each typed failure is a verifiable termination condition.
 
-// 默认恢复参数集中定义，测试可注入小预算；生产默认把重试和等待控制在一个 turn 内。
+// Default recovery parameters are centrally defined; tests can inject small budgets; production defaults keep retries and waiting within one turn.
 export const DEFAULT_INITIAL_MAX_TOKENS = 8_000;
 export const DEFAULT_ESCALATED_MAX_TOKENS = 64_000;
 export const DEFAULT_MAX_CONTINUATIONS = 3;
@@ -22,11 +22,11 @@ export const DEFAULT_MAX_DELAY_SECONDS = 32;
 export const DEFAULT_JITTER_RATIO = 0.25;
 export const DEFAULT_OVERLOAD_FALLBACK_THRESHOLD = 3;
 export const DEFAULT_TOTAL_TIMEOUT_SECONDS = 300;
-// 续写提示要求模型无寒暄地接续，避免重复正文或重新规划。
+// Continuation prompt instructs the model to continue without pleasantries, avoiding repeating text or replanning.
 export const CONTINUATION_PROMPT =
   "Continue exactly where you left off. Do not repeat any text, no apology, no recap. Pick up mid-thought.";
 
-// typed failure 让调用方和测试能按类型判断取消、超时、耗尽和非法 Retry-After。
+// typed failure lets callers and tests determine cancellation, timeout, exhaustion, and invalid Retry-After by type.
 export class RecoveryError extends Error {
   override readonly name: string = "RecoveryError";
 }
@@ -47,8 +47,8 @@ export class RecoveryRetriesExhausted extends RecoveryError {
   override readonly name: string = "RecoveryRetriesExhausted";
 }
 
-// 轻量取消令牌允许测试手动触发，并与 AbortSignal 一起约束所有异步操作。
-// 契约：cancel() 幂等且只触发一次；取消后新增订阅会立即执行，并返回 no-op 退订函数。
+// A lightweight cancellation token lets tests trigger manually, and constrains all asynchronous operations together with AbortSignal.
+// Contract: cancel() is idempotent and triggers only once; new subscriptions after cancellation execute immediately and return a no-op unsubscribe function.
 export class CancellationToken {
   #cancelled = false;
   readonly #listeners = new Set<() => void>();
@@ -58,7 +58,7 @@ export class CancellationToken {
   }
 
   cancel(): void {
-    // 已取消时直接返回；否则一次性触发全部监听器并清空，保证不重复通知。
+    // Return directly when already cancelled; otherwise trigger all listeners once and clear them to prevent duplicate notifications.
     if (this.#cancelled) {
       return;
     }
@@ -73,7 +73,7 @@ export class CancellationToken {
     if (typeof listener !== "function") {
       throw new TypeError("listener must be a function");
     }
-    // 取消后订阅立即唤醒调用方，避免错过已经发生的取消事件。
+    // Subscriptions after cancellation wake callers immediately to avoid missing cancellation events that already occurred.
     if (this.#cancelled) {
       listener();
       return () => {};
@@ -85,20 +85,20 @@ export class CancellationToken {
   }
 }
 
-// 构造时校验预算关系，避免运行期把供应商不接受的 maxTokens 发出去。
+// Validate budget relationships at construction to prevent sending maxTokens values rejected by the provider at runtime.
 export interface RecoveryConfigOptions {
-  // 主模型连续过载时切换到的备用模型名称。
+  // Fallback model name to switch to when the primary model is continuously overloaded.
   readonly primaryModel: string;
   readonly fallbackModel: string;
-  // 首次请求的输出预算；length 后提升到 escalatedMaxTokens。
+  // Output budget for the first request; escalated to escalatedMaxTokens after length finish.
   readonly initialMaxTokens?: number;
-  // 长度恢复阶段使用的第二档预算，不能超过模型上限。
+  // Second-tier budget used during length recovery, which cannot exceed model limits.
   readonly escalatedMaxTokens?: number;
-  // 供应商允许的最大输出预算，保护配置不会发出非法值。
+  // Maximum output budget allowed by vendor, protecting configuration against sending illegal values.
   readonly modelMaxTokens?: number;
-  // 同一逻辑请求最多追加的纯文本续写次数。
+  // Maximum number of plain-text continuations appended to the same logical request.
   readonly maxContinuations?: number;
-  // 429/529 等瞬态失败的总尝试上限。
+  // Total attempt cap for transient failures such as 429/529.
   readonly maxTransientAttempts?: number;
   readonly baseDelaySeconds?: number;
   readonly maxDelaySeconds?: number;
@@ -177,27 +177,27 @@ export class RecoveryConfig {
   }
 }
 
-// 回合内可变恢复状态只由 RecoveryManager 持有，外部通过只读快照观察。
+// Mutable recovery state within a turn is held only by RecoveryManager; external callers observe through read-only snapshots.
 export interface RecoveryState {
-  // 当前实际发送请求所用模型和输出预算。
+  // Model and output budget actually used to send requests currently.
   currentModel: string;
   currentMaxTokens: number;
-  // 是否已经从初始预算升级，避免重复升级分支。
+  // Whether escalated from the initial budget, preventing duplicate escalation branches.
   hasEscalated: boolean;
-  // 已追加的续写片段数量。
+  // Count of appended continuation fragments.
   recoveryCount: number;
-  // 连续 529 次数，达到阈值后切换 fallback。
+  // Count of consecutive 529s; switches to fallback after reaching the threshold.
   consecutive529: number;
-  // 当前窗口是否已执行 prompt-too-long 响应式压缩。
+  // Whether prompt-too-long reactive compaction has already executed for the current window.
   hasAttemptedReactiveCompact: boolean;
 }
 
 export interface RecoveryManagerOptions {
-  // 原始模型调用边界，所有重试仍归属于同一逻辑请求。
+  // Raw model invocation boundary; all retries remain attributed to the same logical request.
   readonly model: ModelClient;
-  // prompt-too-long 时复用的上下文压缩器。
+  // Context compactor reused during prompt-too-long.
   readonly compaction: CompactionManager;
-  // 固定的预算、退避、fallback 和 deadline 约束。
+  // Fixed constraints for budget, backoff, fallback, and deadline.
   readonly config: RecoveryConfig;
   readonly monotonic?: () => number;
   readonly utcNow?: () => Date;
@@ -206,7 +206,7 @@ export interface RecoveryManagerOptions {
   readonly cancellation?: CancellationToken;
 }
 
-// 每个用户回合共享一个总 deadline，重试、压缩和 continuation 不能各自延长时限。
+// Each user turn shares a total deadline; retries, compaction, and continuations cannot extend the time limit independently.
 export class RecoveryManager {
   readonly #model: ModelClient;
   readonly #compaction: CompactionManager;
@@ -217,7 +217,7 @@ export class RecoveryManager {
   readonly #jitter: (upperBound: number) => number;
   readonly #cancellation: CancellationToken;
   #state: RecoveryState | undefined;
-  // 单回合总 deadline；重试、sleep 和压缩共享此截止时间。
+  // Total deadline for a single turn; retries, sleep, and compaction share this deadline.
   #deadline: number | undefined;
 
   constructor(options: RecoveryManagerOptions) {
@@ -269,7 +269,7 @@ export class RecoveryManager {
   }
 
   beginTurn(): void {
-    // 状态在回合边界重置，避免 fallback、长度升级或重试计数泄漏到下一次请求。
+    // State resets at the turn boundary to prevent fallbacks, length escalations, or retry counts from leaking into the next request.
     const startedAt = this.#monotonicNow();
     this.#state = {
       currentModel: this.#config.primaryModel,
@@ -285,8 +285,8 @@ export class RecoveryManager {
   async complete(request: ModelRequest): Promise<ModelReply> {
     const state = this.#requireState();
     validateToolPairing(request.messages);
-    // complete() 只接受外部 Loop 的原始请求：model 必须仍是 primary、maxTokens 必须是 initial。
-    // RecoveryManager 内部的覆盖只通过局部 state/effectiveRequest 发生，防止调用方绕过恢复状态。
+    // complete() accepts only the raw request from the outer Loop: model must still be primary, and maxTokens must be initial.
+    // Overrides inside RecoveryManager occur only via local state/effectiveRequest to prevent callers from bypassing recovery state.
     if (request.model !== undefined && request.model !== this.#config.primaryModel) {
       throw new RangeError("request.model must match RecoveryConfig.primaryModel");
     }
@@ -305,9 +305,9 @@ export class RecoveryManager {
     let transientFailures = 0;
     state.hasAttemptedReactiveCompact = false;
 
-    // 循环只在一个逻辑请求内重试：长度升级、续写、压缩和瞬态退避都返回同一个 ModelReply。
+    // The loop retries only within one logical request: length upgrades, continuations, compaction, and transient backoffs return the same ModelReply.
     while (true) {
-      // 每次尝试都重建完整请求快照；model/maxTokens 随恢复状态变化。
+      // Reconstruct the full request snapshot on each attempt; model and maxTokens change with recovery state.
       const effectiveRequest: ModelRequest = Object.freeze({
         ...request,
         messages: requestMessages,
@@ -318,16 +318,16 @@ export class RecoveryManager {
       try {
         reply = await this.#runBounded((signal) => this.#model.complete(effectiveRequest, signal));
       } catch (error) {
-        // 仅识别的模型边界错误进入恢复分支；其他错误按原样向上抛出。
+        // Enters recovery branch only for recognized model boundary errors; re-throws other errors as-is.
         if (error instanceof ModelRateLimitError) {
-          // 429 是限流信号，不累计到 529 fallback。
+          // 429 is a rate limit signal and does not accumulate toward 529 fallback.
           state.consecutive529 = 0;
           transientFailures += 1;
           await this.#retryTransient(transientFailures, error.retryAfter, "rate limit");
           continue;
         }
         if (error instanceof ModelOverloadedError) {
-          // 529 连续达到阈值后切 fallback，下一次请求才显式携带新模型。
+          // Switch to fallback after consecutive 529 responses reach the threshold; only the next request explicitly carries the new model.
           state.consecutive529 += 1;
           if (state.consecutive529 >= this.#config.overloadFallbackThreshold) {
             state.currentModel = this.#config.fallbackModel;
@@ -338,7 +338,7 @@ export class RecoveryManager {
           continue;
         }
         if (error instanceof ModelPromptTooLongError) {
-          // 输入过长保留首条 system，只对请求快照压缩一次。
+          // When the input is too long, keep the first system message, and compact the request snapshot only once.
           state.consecutive529 = 0;
           const [leadingSystem, compactableHistory] = splitLeadingSystem(requestMessages);
           const outcome = await this.#runBounded((signal) =>
@@ -362,17 +362,17 @@ export class RecoveryManager {
       transientFailures = 0;
       state.consecutive529 = 0;
       if (reply.finishReason !== "length") {
-        // 正常结束立即返回；fragments 只合并到最终回复。
+        // Return immediately on normal completion; merge fragments only into the final reply.
         state.hasAttemptedReactiveCompact = false;
         return mergeFragments(reply, fragments);
       }
       if (!state.hasEscalated) {
-        // 首次 length 提升输出预算并完全丢弃残缺回复，重试同一请求。
+        // On first length finish, escalate output budget, discard incomplete reply completely, and retry the same request.
         state.currentMaxTokens = this.#config.escalatedMaxTokens;
         state.hasEscalated = true;
         continue;
       }
-      // 已提升预算仍 length 时，把文本片段和续写提示放入局部 requestMessages。
+      // When length occurs even after increasing budget, put text fragments and continuation prompts into local requestMessages.
       const fragment = reply.message.content;
       if (reply.message.toolCalls.length > 0 || fragment === null || fragment.length === 0) {
         throw new RecoveryRetriesExhausted(
@@ -398,8 +398,8 @@ export class RecoveryManager {
     retryAfter: string | undefined,
     label: string,
   ): Promise<void> {
-    // 429/529 共用瞬态重试路径：先检查次数和 deadline，再 sleep。
-    // 重试次数和等待时间都受总 deadline 约束，不能排队到回合超时之后。
+    // 429/529 share a transient retry path: check count and deadline first, then sleep.
+    // Retry counts and wait times are constrained by the total deadline and cannot queue past the turn timeout.
     if (transientFailures >= this.#config.maxTransientAttempts) {
       throw new RecoveryRetriesExhausted(`${label} recovery attempts exhausted`);
     }
@@ -414,7 +414,7 @@ export class RecoveryManager {
   }
 
   #parseRetryAfter(value: string): number {
-    // 秒数优先；HTTP-date 必须有明确时区，非法值不 sleep 不重试。
+    // Seconds take precedence; HTTP-date must have an explicit time zone; invalid values do not sleep and do not retry.
     const normalized = value.trim();
     if (/^\d+(?:\.\d+)?$/.test(normalized)) {
       const delay = Number(normalized);
@@ -435,7 +435,7 @@ export class RecoveryManager {
   }
 
   #backoffDelay(attempt: number): number {
-    // 指数退避封顶 32 秒，再叠加可注入抖动，避免同批请求同时重试。
+    // Exponential backoff caps at 32 seconds and adds injectable jitter to prevent simultaneous retries in the same request batch.
     const base = Math.min(
       this.#config.baseDelaySeconds * 2 ** attempt,
       this.#config.maxDelaySeconds,
@@ -449,8 +449,8 @@ export class RecoveryManager {
   }
 
   async #runBounded<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    // 模型调用、sleep 和响应式压缩都在同一个取消/超时边界内运行。
-    // 取消或超时先中止边界操作，再等待它收束，不能遗留后台请求或摘要写入。
+    // Model calls, sleep, and reactive compaction all run within the same cancellation/timeout boundary.
+    // Cancellation or timeout aborts boundary operations first, then waits for convergence, leaving no background requests or summary writes behind.
     this.#raiseIfCancelled();
     const remaining = this.#remainingSeconds();
     const controller = new AbortController();
@@ -490,7 +490,7 @@ export class RecoveryManager {
   }
 
   #remainingSeconds(): number {
-    // 剩余时间 <= 0 时立即失败，而不是先 sleep 再等超时。
+    // Fail immediately when remaining time <= 0, instead of sleeping before timeout.
     if (this.#deadline === undefined) {
       throw new RecoveryError("Recovery turn has not been started");
     }
@@ -523,7 +523,7 @@ export class RecoveryManager {
   }
 }
 
-// 成功回复只拼接最终文本片段，不自动补空格或改写内容。
+// Successful replies concatenate final text fragments only, without automatically padding spaces or rewriting content.
 function mergeFragments(reply: ModelReply, fragments: readonly string[]): ModelReply {
   if (fragments.length === 0) {
     return reply;
@@ -537,7 +537,7 @@ function mergeFragments(reply: ModelReply, fragments: readonly string[]): ModelR
   });
 }
 
-// system 必须保持请求首位；没有 system 时整个快照都可压缩。
+// system must remain first in the request; when system is absent, the entire snapshot can be compacted.
 function splitLeadingSystem(
   messages: readonly ChatMessage[],
 ): readonly [readonly ChatMessage[], readonly ChatMessage[]] {
@@ -547,7 +547,7 @@ function splitLeadingSystem(
   return Object.freeze([Object.freeze([]), Object.freeze([...messages])]);
 }
 
-// 默认 sleeper 响应 AbortSignal，取消时立即以 RecoveryCancelledError 收束。
+// Default sleeper responds to AbortSignal, ending immediately with RecoveryCancelledError upon cancellation.
 function sleep(seconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(resolve, seconds * 1_000);

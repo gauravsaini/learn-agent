@@ -1,4 +1,4 @@
-// 文件 adapter 将不同平台错误归一为这些可由工具层稳定处理的领域错误。
+// The file adapter normalizes cross-platform errors into domain errors that the tool layer can handle stably.
 export class WorkspacePathError extends Error {}
 
 export class TextNotFoundError extends Error {}
@@ -11,10 +11,10 @@ export class InvalidFilePathError extends Error {}
 
 export class FileSystemOperationError extends Error {}
 
-// Windows 设备名不能作为普通路径组件，即使其带有扩展名。
+// Windows device names cannot serve as normal path components, even with extensions.
 const WINDOWS_DEVICE_NAMES = new Set(["AUX", "CLOCK$", "CON", "CONIN$", "CONOUT$", "NUL", "PRN"]);
 
-// 该检查同时供文件 adapter 与 Skill 路径边界复用，避免各功能组件分别实现 Windows 设备名规则。
+// This check is shared by file adapters and Skill path boundaries, preventing components from implementing Windows device name rules separately.
 export function isWindowsReservedComponent(component: string): boolean {
   if (component.endsWith(" ") || component.endsWith(".")) {
     return true;
@@ -44,14 +44,14 @@ export function isWindowsReservedComponent(component: string): boolean {
   );
 }
 
-// 权限层仅依赖此窄接口检查写入边界，避免反向依赖具体文件实现。
+// The permission layer depends only on this narrow interface to check write boundaries, avoiding reverse dependencies on concrete file implementations.
 export interface WorkspaceWriteBoundary {
   isPathWithinWorkspace(workspace: string, relativePath: string): Promise<boolean>;
 }
 
-// 仅声明 Agent 工具需要的工作区文件能力。
-// SkillRegistry 复用本文件的保留组件检查，但 SKILL.md 扫描不走此 adapter：
-// 它需要控制 frontmatter 的逐字节读取，并在加载时异步重查真实路径。
+// Declares only workspace file capabilities required by Agent tools.
+// SkillRegistry reuses the reserved component check in this file, but SKILL.md scanning bypasses this adapter:
+// It must control byte-by-byte reading of frontmatter and asynchronously recheck real paths on load.
 export interface WorkspaceFileSystem extends WorkspaceWriteBoundary {
   readFile(workspace: string, relativePath: string, limit?: number): Promise<string>;
   writeFile(workspace: string, relativePath: string, content: string): Promise<number>;

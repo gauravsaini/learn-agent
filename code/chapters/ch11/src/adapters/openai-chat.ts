@@ -1,6 +1,6 @@
-// 文件职责：本模块是唯一直接依赖 OpenAI SDK 的供应商适配层，core 不导入供应商类型。
-// 它负责三件事：把内部 ModelRequest 映射成 OpenAI wire 格式、把 HTTP 错误按稳定字段归一成
-// typed model error、把成功响应逐字段校验后转成 ModelReply。
+// File responsibility: this module is the only provider adapter layer that directly depends on the OpenAI SDK; core does not import provider types.
+// It is responsible for three tasks: mapping internal ModelRequest to OpenAI wire format, normalizing HTTP errors into stable fields
+// typed model error, converting validated success responses field by field into ModelReply.
 import OpenAI, { APIError } from "openai";
 import type {
   ChatCompletionAssistantMessageParam,
@@ -25,12 +25,12 @@ import type {
 } from "../core/model.js";
 import type { OpenAISettings } from "../config.js";
 
-// 成功响应未通过结构校验时抛出此错误。供应商返回 200 不保证结构可信，绝不猜测字段类型。
+// Throw this error when successful responses fail structural validation. Vendor 200 returns do not guarantee trusted structures; never guess field types.
 export class OpenAIResponseError extends Error {
   override readonly name = "OpenAIResponseError";
 }
 
-// 最小客户端边界只暴露 create，便于测试注入 fake OpenAI 状态对象。
+// A minimal client boundary exposes only create, allowing tests to inject fake OpenAI state objects.
 export interface OpenAIClientBoundary {
   readonly chat: {
     readonly completions: {
@@ -46,22 +46,22 @@ export class OpenAIChatModel implements ModelClient {
   readonly #client: OpenAIClientBoundary;
   readonly #model: string;
 
-  // 默认创建真实 OpenAI 客户端，并把 SDK 自带重试关闭为 0；重试决策统一交给恢复层。
+  // Defaults to creating a real OpenAI client and turns off SDK retries to 0; retry decisions are delegated uniformly to the recovery layer.
   constructor(settings: OpenAISettings, client?: OpenAIClientBoundary) {
     this.#client =
       client === undefined
         ? new OpenAI({
             apiKey: settings.apiKey,
             baseURL: settings.baseUrl,
-            // 重试由第 11 章的供应商无关恢复层统一控制，SDK 不得隐藏额外请求。
+            // Retries are controlled uniformly by the provider-agnostic recovery layer from Chapter 11; the SDK must not hide additional requests.
             maxRetries: 0,
           })
         : client;
     this.#model = settings.model;
   }
 
-  // complete() 是供应商边界：先拒绝不满足协议的请求，再调用 OpenAI SDK。
-  // signal 直接透传给网络层；返回的成功响应仍按不可信数据做逐字段校验。
+  // complete() is the provider boundary: reject non-compliant requests first, then call the OpenAI SDK.
+  // Pass signal directly to network layers; validate returned success responses field by field as untrusted data.
   async complete(request: ModelRequest, signal?: AbortSignal): Promise<ModelReply> {
     validateToolPairing(request.messages);
     if (
@@ -98,7 +98,7 @@ export class OpenAIChatModel implements ModelClient {
   }
 }
 
-// 输入过长只接受稳定的 code/type 标识，不匹配 message 文本。
+// When the input is too long, accept only stable code/type identifiers; do not match message text.
 const PROMPT_TOO_LONG_CODES = new Set([
   "context_length_exceeded",
   "max_context_window",
@@ -106,7 +106,7 @@ const PROMPT_TOO_LONG_CODES = new Set([
   "prompt_too_long",
 ]);
 
-// 只识别 APIError 的结构化字段；未知错误原样抛回。
+// Recognize only structured fields in APIError; rethrow unknown errors as-is.
 function mapApiStatusError(error: unknown): Error | undefined {
   if (!(error instanceof APIError)) {
     return undefined;
@@ -147,7 +147,7 @@ function mapApiStatusError(error: unknown): Error | undefined {
   return undefined;
 }
 
-// error code 只取平铺对象或一层 error 对象中的 code/type，避免递归搜索不可信 JSON。
+// error code only extracts code/type from flat objects or one-level error objects, avoiding recursive searches of untrusted JSON.
 function structuredErrorIdentifier(body: unknown): string | undefined {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return undefined;
@@ -168,7 +168,7 @@ function structuredErrorIdentifier(body: unknown): string | undefined {
   return undefined;
 }
 
-// 只从标准 Headers 读取 Retry-After，其他响应类型不猜测。
+// Read Retry-After only from standard Headers; do not guess for other response types.
 function retryAfterValue(headers: unknown): string | undefined {
   if (headers instanceof Headers) {
     return nonEmptyText(headers.get("retry-after"));
@@ -191,8 +191,8 @@ interface NormalizedResponse {
   readonly usage?: TokenUsage;
 }
 
-// 成功响应属于不可信边界。HTTP 200 只代表请求被受理，不代表 choices/message/finish_reason/
-// tool_calls/usage 符合模型接口；这里逐字段校验，任何不匹配都立即失败，避免残缺对象进入恢复层。
+// Successful responses belong to untrusted boundaries. HTTP 200 indicates only that requests were accepted, not that choices/message/finish_reason/
+// tool_calls/usage conforms to model interfaces; validate field by field here, failing immediately on mismatches to keep incomplete objects out of recovery layers.
 function normalizeResponse(response: unknown): NormalizedResponse {
   if (typeof response !== "object" || response === null) {
     throw new OpenAIResponseError("Chat completion response must be an object");
@@ -246,8 +246,8 @@ function normalizeResponse(response: unknown): NormalizedResponse {
   });
 }
 
-// tool_calls 必须带完整 id/name/arguments。供应商返回缺字段或非法参数时本轮明确失败，
-// 不能把半成品工具调用写进 history，也不能在恢复层猜测补全。
+// tool_calls must carry complete id/name/arguments; if the provider returns missing fields or invalid arguments, this turn fails explicitly,
+// Cannot write incomplete tool calls into history, nor guess completions in the recovery layer.
 function normalizeToolCall(call: unknown): ReturnType<typeof toolCall> {
   if (typeof call !== "object" || call === null) {
     throw new OpenAIResponseError("Tool call must be an object");
@@ -279,8 +279,8 @@ function isFinishReason(value: unknown): value is FinishReason {
   );
 }
 
-// ChatMessage 到 OpenAI wire format 的映射。system/user 只传 content；tool 必须带 tool_call_id，
-// 与 assistant 的 tool_calls 配对；assistant 的 tool_calls 原样展开为 function 结构。
+// Mapping from ChatMessage to OpenAI wire format. system/user sends only content; tool must include tool_call_id,
+// Pairs with assistant tool_calls; assistant tool_calls expand into function structures as-is.
 function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
   switch (message.role) {
     case "system":
@@ -305,7 +305,7 @@ function toOpenAIMessage(message: ChatMessage): ChatCompletionMessageParam {
   }
 }
 
-// 工具 schema 直接映射为 OpenAI 接受的 function 对象；内部契约要求 type 固定为 "function"。
+// Tool schemas map directly to function objects accepted by OpenAI; internal contracts require type fixed to "function".
 function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
   return {
     type: "function",
@@ -317,7 +317,7 @@ function toOpenAITool(tool: ModelRequest["tools"][number]): ChatCompletionTool {
   };
 }
 
-// usage 字段不是纯诊断信息，可能被外部服务或代理改写；缺少任一计数或出现负数/小数时本轮失败。
+// usage is not purely diagnostic; external services or proxies can rewrite it; fail this turn if any count is missing, negative, or decimal.
 function normalizeUsage(usage: unknown): TokenUsage {
   if (typeof usage !== "object" || usage === null) {
     throw new OpenAIResponseError("Chat completion usage must be an object");
@@ -334,7 +334,7 @@ function normalizeUsage(usage: unknown): TokenUsage {
 
 function readUsageCount(usage: object, field: string): number {
   const value = Reflect.get(usage, field);
-  // 计数必须是可枚举的非负整数；浮点、NaN、负数都属于结构违约。
+  // Counts must be enumerable non-negative integers; floats, NaN, and negative numbers violate the structural contract.
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     throw new OpenAIResponseError(
       `Chat completion usage field ${field} must be non-negative integer`,

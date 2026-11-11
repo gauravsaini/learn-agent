@@ -15,7 +15,7 @@ import { PermissionDecision, PermissionPolicy, PermissionRequest } from "./permi
 import type { PreparedToolCall, ToolContext, ToolRegistry, ToolResult } from "./tools.js";
 import { copyToolResult, toolError } from "./tools.js";
 
-// Loop 在模型、权限与工具前后插入 Hook，但保持每个 tool call 必有回填结果。
+// Loop inserts hooks before and after model, permissions, and tools, while ensuring every tool call has a backfilled result.
 export class AgentRunError extends Error {
   override readonly name: string = "AgentRunError";
 }
@@ -44,14 +44,14 @@ export interface AgentRunnerOptions {
   readonly permissionPolicy?: PermissionPolicy;
   readonly hooks?: HookRegistry;
   readonly toolRoundObserver?: ToolRoundObserver;
-  // 请求处理器只影响下一次模型请求；工具结果处理器必须在回填前完成。
+  // Request processors affect only the next model request; tool result processors must finish before backfilling.
   readonly historyProcessor?: RequestHistoryProcessor;
   readonly toolResultProcessor?: ToolResultProcessor;
 }
 
 export interface RequestHistoryProcessor {
-  // 处理器在模型请求前拿到 canonical 快照，返回的数组只用于本次请求；
-  // 它不能直接修改 AgentRunner.#history。产出必须仍满足消息配对，确保压缩不破坏模型协议。
+  // Handlers receive a canonical snapshot before model requests; the returned array is used only for this request;
+  // It cannot directly modify AgentRunner.#history. Outputs must still satisfy message pairing to ensure compaction does not break model protocols.
   prepare(history: readonly ChatMessage[]): Promise<readonly ChatMessage[]>;
 }
 
@@ -60,7 +60,7 @@ export type ToolResultProcessor = (
 ) => Promise<readonly ToolResult[]> | readonly ToolResult[];
 
 export interface ToolRoundObserver {
-  // 观察器可在模型请求前提供指导，并在工具轮完成后更新内部状态。
+  // Observers can provide guidance before model requests and update internal state after tool turns complete.
   beforeModel(): readonly ChatMessage[];
   recordToolRound(toolNames: readonly string[]): void;
 }
@@ -80,7 +80,7 @@ export class AgentRunner {
   readonly #identity: string;
   readonly #permissionPolicy: PermissionPolicy | undefined;
   readonly #hooks: HookRegistry;
-  // 可选的每轮观察器：请求前注入临时指导，工具轮后更新状态。
+  // Optional per-turn observer: injects temporary guidance before requests and updates state after tool turns.
   readonly #toolRoundObserver: ToolRoundObserver | undefined;
   readonly #historyProcessor: RequestHistoryProcessor | undefined;
   readonly #toolResultProcessor: ToolResultProcessor | undefined;
@@ -132,8 +132,8 @@ export class AgentRunner {
     for (let turn = 1; turn <= this.#maxTurns; turn += 1) {
       validateToolPairing(this.#history);
       const tools = this.#tools.snapshot();
-      // 每次请求从 canonical history 复制快照，压缩只发生在请求边界。
-      // prepare 失败时整次 run 显式失败，不把未验证的历史发给模型。
+      // Copy snapshots from canonical history on each request; compaction happens only at request boundaries.
+      // When prepare fails, the entire run fails explicitly without sending unvalidated history to the model.
       const preparedHistory: unknown =
         this.#historyProcessor === undefined
           ? this.#history
@@ -146,8 +146,8 @@ export class AgentRunner {
       }
       const requestHistory = Object.freeze([...preparedHistory]);
       validateToolPairing(requestHistory);
-      // 观察器指导是请求级内容，只影响当次模型输入。
-      // TODO 提醒是额外系统消息，不写入持久历史，避免重复累积。
+      // Observer guidance is request-level content and affects only the current model input.
+      // TODO reminders are extra system messages not written to persistent history to avoid repeated accumulation.
       const observerGuidance =
         this.#toolRoundObserver === undefined ? [] : this.#toolRoundObserver.beforeModel();
       const request: ModelRequest = Object.freeze({
@@ -173,7 +173,7 @@ export class AgentRunner {
         if (assistant.content === null) {
           throw new AgentRunError("Model stopped without final text or tool calls");
         }
-        // Stop Hook 最多请求一次继续，stopHookActive 防止自我延续的无限循环。
+        // Stop Hook requests continuation at most once; stopHookActive prevents self-perpetuating infinite loops.
         const stopHook = await this.#hooks.runStop(this.#history, stopHookActive);
         if (stopHook.forceContinue !== undefined) {
           this.#history.push(...stopHook.additionalContext, stopHook.forceContinue);
@@ -183,7 +183,7 @@ export class AgentRunner {
         return this.#complete(assistant.content, turn);
       }
 
-      // 一条 assistant 消息中的每个调用都必须回填一次，错误和拒绝也不例外。
+      // Each call in an assistant message must backfill once, including errors and denials.
       const results: ToolResult[] = [];
       const deferredContext: ChatMessage[] = [];
       let stoppedResultIndex: number | undefined;
@@ -204,7 +204,7 @@ export class AgentRunner {
         }
         results.push(result);
       }
-      // 整批工具结果先交给处理器（例如大结果落盘），再按原 tool_call_id 顺序回填。
+      // Send whole-batch tool results to processors (such as persisting large results to disk), then backfill in original tool_call_id order.
       const processedResults = await this.#processToolResults(results, assistant.toolCalls);
       for (const [index, call] of assistant.toolCalls.entries()) {
         const result = processedResults[index];
@@ -233,7 +233,7 @@ export class AgentRunner {
     results: readonly ToolResult[],
     calls: readonly ToolCall[],
   ): Promise<readonly ToolResult[]> {
-    // 结果处理器失败时整批返回受控错误，仍与原工具调用数量一一对应。
+    // When the result processor fails, return controlled errors for the whole batch, strictly matching the original tool call count one-to-one.
     if (this.#toolResultProcessor === undefined) {
       return Object.freeze(results.map((result) => copyToolResult(result)));
     }
@@ -245,7 +245,7 @@ export class AgentRunner {
       }
       return Object.freeze(processed.map((result) => copyToolResult(result)));
     } catch {
-      // 整批失败统一替换为受控错误，避免部分原始结果、部分落盘引用混入同一轮历史。
+      // Replace whole-batch failures with controlled errors to avoid mixing raw results and persisted references in the same turn history.
       return Object.freeze(
         calls.map(() => toolError("tool_result_processing_error", "Tool result processing failed")),
       );
@@ -278,13 +278,13 @@ export class AgentRunner {
       );
     }
     const effective = preHook.updatedInput === undefined ? prepared : preHook.updatedInput;
-    // Pre Hook 可阻断或建议权限，实际拒绝仍由统一权限策略裁决。
+    // Pre Hook can block or recommend permissions; unified permission policy still arbitrates actual denials.
     if (preHook.blockingError !== undefined) {
       return execution(preHook.blockingError, preHook.additionalContext);
     }
 
     if (this.#permissionPolicy !== undefined) {
-      // Hook 只提交结构化建议；系统 deny 仍在同一策略合并中拥有最高优先级。
+      // Hooks submit only structured recommendations; system deny retains highest priority in policy merging.
       try {
         const decision = await this.#permissionPolicy.decide(
           new PermissionRequest({

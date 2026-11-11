@@ -1,4 +1,4 @@
-// JSON Cron 适配器：把 durable 计划与 outbox 持久化到 workspace 的 .agent_tutorial/cron，以进程内 mutex 加文件锁保证原子迁移。
+// JSON Cron adapter: persists durable schedules and outbox to workspace .agent_tutorial/cron, using in-process mutex and file locks to guarantee atomic transitions.
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, realpath, rename, rm, stat, lstat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
@@ -20,65 +20,65 @@ import {
   validateCronTimezone,
 } from "../features/cron.js";
 
-// 版本号决定 state.json 的 schema 兼容边界；锁参数则控制多进程竞争时的回收与重试策略。
+// The version number determines the schema compatibility boundary of state.json; lock parameters control reclamation and retry policies during multi-process contention.
 const STATE_VERSION = 1;
 const LOCK_STALE_MS = 30_000;
 const LOCK_UPDATE_MS = 10_000;
 const LOCK_RETRY_MS = 10;
 const MAX_LOCK_RETRIES = 100;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-// 同一进程内对同一 workspace 再串行一次，避免多个 store 实例反复争抢目录锁。
+// Serialize once more per workspace in the same process to prevent multiple store instances from repeatedly contesting directory locks.
 const PROCESS_LOCK_TAILS = new Map<string, Promise<void>>();
 
 export interface JsonCronStoreOptions {
-  // 计划与事件 id 可分别注入，测试可以稳定覆盖碰撞和幂等场景。
+  // Plan and event ids can be injected separately; tests can stably cover collision and idempotency scenarios.
   readonly idGenerator?: () => string;
   readonly eventIdGenerator?: () => string;
-  // durable 与 session outbox 共享的总容量。
+  // Total capacity shared by durable and session outbox.
   readonly outboxCapacity?: number;
-  // 原子替换注入点用于模拟写盘失败。
+  // Atomic replacement injection point used to simulate disk write failures.
   readonly atomicReplace?: (path: string, content: Buffer) => Promise<void>;
 }
 interface CronPaths {
-  // realpath 后的工作区根目录。
+  // Workspace root directory after realpath.
   readonly workspace: string;
-  // .agent_tutorial 运行时状态根。
+  // .agent_tutorial runtime state root.
   readonly stateRoot: string;
-  // Cron 状态目录。
+  // Cron state directory.
   readonly root: string;
-  // durable job 与 outbox 的单文件快照。
+  // Single-file snapshot of durable jobs and outbox.
   readonly state: string;
-  // 快照读改写使用的跨进程锁路径。
+  // Cross-process lock path used for snapshot read-modify-write.
   readonly lock: string;
-  // durable scheduler leader lease 使用的独立目录。
+  // Dedicated directory used by the durable scheduler leader lease.
   readonly leader: string;
 }
-// state.json 只保存 durable job/outbox；session-only 状态始终留在内存中。
+// state.json saves durable jobs/outbox only; session-only state always stays in memory.
 interface CronState {
-  // 快照 schema 版本。
+  // Snapshot schema version.
   readonly version: number;
-  // 仅包含 durable 计划。
+  // Contains only durable schedules.
   readonly jobs: readonly CronJob[];
-  // 仅包含 durable 待确认事件。
+  // Contains only durable unacknowledged events.
   readonly outbox: readonly CronEvent[];
 }
 
-// JSON store 统一管理 durable 磁盘快照与当前进程 session-only 状态。
+// JSON store uniformly manages durable disk snapshots and current process session-only state.
 export class JsonCronStore implements CronStore {
-  // 外部 workspace 输入；每次 I/O 前重新解析真实路径。
+  // External workspace input; re-resolve real paths before each I/O operation.
   readonly #workspaceInput: string;
   readonly #idGenerator: () => string;
   readonly #eventIdGenerator: () => string;
-  // 单次 tick 最多保留的未确认事件总量。
+  // Maximum total unacknowledged events retained in a single tick.
   readonly #outboxCapacity: number;
   readonly #atomicReplace: (path: string, content: Buffer) => Promise<void>;
-  // durable=False 的 job 与 pending event 只保存在本实例，不写入 state.json。
+  // Keep jobs and pending events with durable=False in this instance only; do not write to state.json.
   readonly #sessionJobs = new Map<string, CronJob>();
   readonly #sessionOutbox = new Map<string, CronEvent>();
-  // 当前实例持有的 leader 释放函数；undefined 表示非 leader。
+  // Leader release function held by current instance; undefined indicates non-leader.
   #leaderRelease: (() => Promise<void>) | undefined;
 
-  // 校验注入边界和容量；构造器不创建状态目录。
+  // Validate injection boundaries and capacity; constructor does not create state directories.
   constructor(workspace: string, options: JsonCronStoreOptions = {}) {
     if (typeof workspace !== "string" || workspace.trim().length === 0)
       throw new TypeError("workspace must be a non-empty string");
@@ -92,7 +92,7 @@ export class JsonCronStore implements CronStore {
     this.#atomicReplace = options.atomicReplace ?? atomicReplace;
   }
 
-  // 验证并创建计划；durable 原子写入快照，session-only 只进入内存 Map。
+  // Validates and creates schedule; durable writes snapshot atomically, session-only enters in-memory Map only.
   async scheduleCron(input: {
     cron: string;
     prompt: string;
@@ -105,7 +105,7 @@ export class JsonCronStore implements CronStore {
     if (typeof input.recurring !== "boolean" || typeof input.durable !== "boolean") {
       throw new CronStorageError("Cron recurring and durable values must be boolean");
     }
-    // 创建 job 前先验证表达式、时区、prompt 和 identity，非法输入不会产生可持久化的定义。
+    // Validates expression, timezone, prompt, and identity before creating job, preventing invalid input from generating persistable definitions.
     const id = this.#nextId(this.#idGenerator, "Cron job");
     const cron = validateCronExpression(input.cron);
     const timezone = validateCronTimezone(input.timezone);
@@ -125,16 +125,16 @@ export class JsonCronStore implements CronStore {
       const state = await this.#loadState(paths);
       if (this.#sessionJobs.has(job.id) || state.jobs.some((existing) => existing.id === job.id))
         throw new CronStorageError(`Cron job id already exists: ${job.id}`);
-      // durable job 写入原子快照，session-only job 只放入内存 Map。
+      // Write durable jobs to atomic snapshots; place session-only jobs only in memory Maps.
       if (job.durable) await this.#persist(paths, { ...state, jobs: [...state.jobs, job] });
       else this.#sessionJobs.set(job.id, job);
       return job;
     });
   }
 
-  // 合并磁盘与内存状态读取单个计划。
+  // Merge disk and in-memory states to read a single schedule.
   async getJob(jobId: string): Promise<CronJob> {
-    // 查询时把 durable 快照与 session-only 合并，调用方不需要知道 job 来自哪个生命周期。
+    // Merge durable snapshots with session-only records during queries; callers do not need to know which lifecycle produced the job.
     const id = this.#lookupJobId(jobId);
     const paths = await this.#preparePaths(false);
     return await this.#withLock(paths, async () => {
@@ -146,7 +146,7 @@ export class JsonCronStore implements CronStore {
       return job;
     });
   }
-  // 返回 durable 与 session-only 合并后的有序不可变快照。
+  // Returns an ordered immutable snapshot after merging durable and session-only.
   async listJobs(): Promise<readonly CronJob[]> {
     const paths = await this.#preparePaths(false);
     return await this.#withLock(paths, async () =>
@@ -158,14 +158,14 @@ export class JsonCronStore implements CronStore {
     );
   }
 
-  // 在同一临界区生成到期事件、推进 recurring 槽位并删除 one-shot 计划。
+  // Generate expiration events, advance recurring slots, and delete one-shot schedules within the same critical section.
   async tick(nowUtc: Date, includeDurable = true): Promise<readonly CronEvent[]> {
     if (typeof includeDurable !== "boolean")
       throw new TypeError("includeDurable must be a boolean");
     if (!(nowUtc instanceof Date) || !Number.isFinite(nowUtc.valueOf())) {
       throw new CronStorageError("Cron clock value must be a valid UTC Date");
     }
-    // tick 在锁内同时迁移 durable 与 session-only：先按到期时间排序，再受 outbox 容量限制。
+    // tick migrates both durable and session-only within the lock: sort by expiration first, then apply outbox capacity limits.
     const paths = await this.#preparePaths(false);
     return await this.#withLock(paths, async () => {
       const state = await this.#loadState(paths);
@@ -181,7 +181,7 @@ export class JsonCronStore implements CronStore {
         ...(includeDurable ? durableJobs : []),
         ...sessionJobs,
       ]);
-      // durable 与 session 事件共享同一容量，防止 session-only 无限占用当前进程内存。
+      // durable and session events share the same capacity to prevent session-only events consuming process memory indefinitely.
       const capacityUsed = (includeDurable ? durableOutbox.size : 0) + sessionOutbox.size;
       let available = this.#outboxCapacity - capacityUsed;
       const created: CronEvent[] = [];
@@ -222,7 +222,7 @@ export class JsonCronStore implements CronStore {
         created.push(event);
         available -= 1;
       }
-      // 只有在产生 durable event 时才写 state.json；纯 session-only 状态不落盘。
+      // Write state.json only when durable events occur; session-only state does not persist to disk.
       if (created.some((event) => event.durable))
         await this.#persist(paths, {
           version: STATE_VERSION,
@@ -237,7 +237,7 @@ export class JsonCronStore implements CronStore {
     });
   }
 
-  // 返回按槽位和事件 id 排序的未确认 outbox 快照。
+  // Returns an unacknowledged outbox snapshot sorted by slot and event ID.
   async pendingEvents(includeDurable = true): Promise<readonly CronEvent[]> {
     if (typeof includeDurable !== "boolean")
       throw new TypeError("includeDurable must be a boolean");
@@ -255,13 +255,13 @@ export class JsonCronStore implements CronStore {
       ),
     );
   }
-  // 从对应生命周期的 outbox 删除事件；不存在时返回 false 供 runtime 检测丢失确认。
+  // Deletes events from outbox of corresponding lifecycle; returns false when missing so runtime can detect lost acknowledgments.
   async ackEvent(eventId: string): Promise<boolean> {
     const id = this.#lookupEventId(eventId);
     const paths = await this.#preparePaths(false);
     return await this.#withLock(paths, async () => {
       const state = await this.#loadState(paths);
-      // ack 优先删除 session outbox；durable event 需要把删除后的快照原子提交。
+      // ack deletes the session outbox first; durable events must atomically commit the snapshot after deletion.
       if (this.#sessionOutbox.delete(id)) return true;
       if (!state.outbox.some((event) => event.eventId === id)) return false;
       await this.#persist(paths, {
@@ -271,13 +271,13 @@ export class JsonCronStore implements CronStore {
       return true;
     });
   }
-  // 非阻塞争夺 durable scheduler leader lease；同实例重复争夺也返回 false。
+  // Non-blocking acquisition of durable scheduler leader lease; repeated acquisition by the same instance also returns false.
   async tryAcquireLeader(): Promise<boolean> {
     if (this.#leaderRelease !== undefined) return false;
     const paths = await this.#preparePaths(true);
     let release: (() => Promise<void>) | undefined;
     try {
-      // leader lock 非阻塞尝试一次；拿不到就代表已有另一个 scheduler 负责 durable job。
+      // leader lock attempts once non-blocking; failure indicates another scheduler already manages durable jobs.
       release = await acquireLock(paths.leader, {
         realpath: true,
         stale: LOCK_STALE_MS,
@@ -291,7 +291,7 @@ export class JsonCronStore implements CronStore {
     this.#leaderRelease = release;
     return true;
   }
-  // 幂等释放 leader lease，并把底层释放失败包装为存储错误。
+  // Idempotently release the leader lease and wrap underlying release failures as storage errors.
   async releaseLeader(): Promise<void> {
     if (this.#leaderRelease === undefined) return;
     const release = this.#leaderRelease;
@@ -303,9 +303,9 @@ export class JsonCronStore implements CronStore {
     }
   }
 
-  // 构造并验证所有状态路径；create=false 时允许目录尚不存在。
+  // Construct and validate all state paths; allow missing directories when create=false.
   async #preparePaths(create: boolean): Promise<CronPaths> {
-    // 状态路径固定在 workspace/.agent_tutorial 下，并在创建或读取前验证不能逃逸 workspace。
+    // The state path is fixed under workspace/.agent_tutorial and is validated not to escape workspace before creation or reading.
     try {
       const workspace = await realpath(this.#workspaceInput);
       if (!(await stat(workspace)).isDirectory()) throw new Error("workspace is not a directory");
@@ -341,9 +341,9 @@ export class JsonCronStore implements CronStore {
       throw new CronStorageError("Cron state root is invalid", { cause: error });
     }
   }
-  // 用进程内队列与跨进程目录锁包住一次完整快照操作。
+  // Wrap a complete snapshot operation with an in-process queue and an inter-process directory lock.
   async #withLock<T>(paths: CronPaths, operation: () => Promise<T>): Promise<T> {
-    // 进程内 mutex 加 proper-lockfile 目录锁双重串行化，保证同一时刻只有一次快照读改写。
+    // Dual serialization with in-process mutex and proper-lockfile directory lock ensures only one snapshot read-modify-write at any time.
     return await withMutex(paths.workspace, async () => {
       if (!(await exists(paths.root))) return await operation();
       let release: (() => Promise<void>) | undefined;
@@ -385,11 +385,11 @@ export class JsonCronStore implements CronStore {
       }
     });
   }
-  // 严格读取 durable 快照；缺失文件等价于空的当前版本状态。
+  // Strictly reads durable snapshots; missing files equal empty state for the current version.
   async #loadState(paths: CronPaths): Promise<CronState> {
     if (!(await exists(paths.state))) return { version: STATE_VERSION, jobs: [], outbox: [] };
     try {
-      // state.json 是外部可损坏的输入，读取后必须按严格 schema 解析，坏状态显式失败。
+      // state.json is externally corruptible input; parse with strict schemas after reading, and fail explicitly on corrupt state.
       const details = await lstat(paths.state);
       if (!details.isFile() || details.isSymbolicLink()) {
         throw new CronStorageError("Cron state must be a regular file");
@@ -401,10 +401,10 @@ export class JsonCronStore implements CronStore {
       throw new CronStorageError("Cron state is invalid", { cause: error });
     }
   }
-  // 将完整 durable 状态序列化后原子替换，避免部分写入。
+  // Serialize full durable state and replace atomically to avoid partial writes.
   async #persist(paths: CronPaths, state: CronState): Promise<void> {
     try {
-      // 写入始终走原子替换，提交的新快照与旧字节只能二选一。
+      // Writes always use atomic replacement; submitted new snapshot and old bytes are mutually exclusive.
       await this.#atomicReplace(
         paths.state,
         Buffer.from(`${JSON.stringify(serializeState(state), null, 2)}\n`, "utf8"),
@@ -415,7 +415,7 @@ export class JsonCronStore implements CronStore {
     }
   }
   #nextId(generator: () => string, label: string): string {
-    // UUID 由注入生成器提供，但 store 仍校验 canonical 格式，避免把脏 id 写入状态。
+    // An injected generator provides the UUID, but the store still validates canonical format to avoid writing dirty IDs into state.
     try {
       return canonicalCronId(generator());
     } catch (error) {
@@ -424,7 +424,7 @@ export class JsonCronStore implements CronStore {
       });
     }
   }
-  // 查询 ID 格式错误统一表现为 job not found，避免泄漏存储实现细节。
+  // Format errors in query IDs consistently surface as job not found to avoid leaking storage implementation details.
   #lookupJobId(value: string): string {
     try {
       return canonicalCronId(value);
@@ -432,7 +432,7 @@ export class JsonCronStore implements CronStore {
       throw new CronJobNotFoundError("Cron job id must be a canonical UUID");
     }
   }
-  // ack 使用的事件 ID 必须是规范 UUID，格式错误属于存储契约失败。
+  // The event ID for ack must be a canonical UUID; invalid formats violate the storage contract.
   #lookupEventId(value: string): string {
     try {
       return canonicalCronId(value);
@@ -443,7 +443,7 @@ export class JsonCronStore implements CronStore {
 }
 
 function parseState(value: unknown): CronState {
-  // 从 JSON 恢复时逐项校验版本、字段集、类型、UTC 时间和不可变记录约束。
+  // Validates version, field set, types, UTC time, and immutable record constraints item by item when recovering from JSON.
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new CronStorageError("Cron state is invalid");
   const record = value as Record<string, unknown>;
@@ -472,7 +472,7 @@ function parseState(value: unknown): CronState {
     throw new CronStorageError("Cron state contains invalid duplicate or non-durable records");
   return { version: STATE_VERSION, jobs, outbox };
 }
-// 从 durable 快照恢复单个计划，并重新验证表达式、时区和槽位单调性。
+// Recovers a single schedule from durable snapshot and revalidates expression, timezone, and slot monotonicity.
 function parseJob(value: unknown): CronJob {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new CronStorageError("Cron job is invalid");
@@ -528,7 +528,7 @@ function parseJob(value: unknown): CronJob {
     lastSlotAtUtc: last,
   });
 }
-// 从 durable outbox 恢复事件，并重建 RuntimeEvent 的方法和上下文字段。
+// Recovers events from durable outbox and reconstructs RuntimeEvent methods and context fields.
 function parseEvent(value: unknown): CronEvent {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     throw new CronStorageError("Cron event is invalid");
@@ -567,18 +567,18 @@ function requireExactKeys(
   expected: readonly string[],
   label: string,
 ): void {
-  // 严格字段集是快照版本的一部分；未知字段会让迁移决策变成猜测，因此直接失败。
+  // The strict field set is part of the snapshot version; unknown fields make migration decisions guesswork, so fail directly.
   const actual = Object.keys(record).sort();
   const required = [...expected].sort();
   if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
     throw new CronStorageError(`${label} contains unsupported fields`);
   }
 }
-// 持久化时间必须显式带 Z，拒绝依赖环境时区解释的字符串。
+// Persisted times must explicitly include Z, rejecting strings that rely on environment timezone interpretations.
 function isUtcTimestamp(value: string): boolean {
   return /Z$/u.test(value);
 }
-// 以稳定字段名和 UTC ISO 字符串生成可审计的 state.json payload。
+// Generates auditable state.json payload with stable field names and UTC ISO strings.
 function serializeState(state: CronState): Record<string, unknown> {
   return {
     version: STATE_VERSION,
@@ -604,13 +604,13 @@ function serializeState(state: CronState): Record<string, unknown> {
     })),
   };
 }
-// 统一校验并裁剪计划中的必填文本字段。
+// Uniformly validate and trim required text fields in plans.
 function requireText(value: string, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0)
     throw new CronStorageError(`${label} must not be empty`);
   return value.trim();
 }
-// 安全读取 Node/proper-lockfile 错误码。
+// Safely read Node/proper-lockfile error codes.
 function hasCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && Reflect.get(error, "code") === code;
 }
@@ -627,7 +627,7 @@ async function delay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 async function validateDirectory(workspace: string, path: string, label: string): Promise<void> {
-  // 状态目录必须是 workspace 内真实目录，防止符号链接或相对路径把状态写到外部。
+  // The state directory must be a real directory inside the workspace to prevent symlinks or relative paths from writing state outside.
   const resolved = await realpath(path);
   const relativePath = relative(workspace, resolved);
   if (
@@ -637,7 +637,7 @@ async function validateDirectory(workspace: string, path: string, label: string)
     throw new CronStorageError(`${label} escapes workspace or is not a directory`);
 }
 async function withMutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  // 用 Promise 队列把同进程内对同一 workspace 的操作串行化，避免并发操作覆盖内存状态。
+  // Use a Promise queue to serialize operations on the same workspace within the process, preventing concurrent operations from overwriting memory state.
   const previous = PROCESS_LOCK_TAILS.get(key);
   const result = previous === undefined ? operation() : previous.then(operation);
   const tail = result.then(
@@ -652,7 +652,7 @@ async function withMutex<T>(key: string, operation: () => Promise<T>): Promise<T
   }
 }
 async function atomicReplace(path: string, content: Buffer): Promise<void> {
-  // 先写临时文件、sync、再 rename，读方只能看到完整旧快照或完整新快照。
+  // Writes temporary file first, syncs, then renames; readers see only complete old snapshot or complete new snapshot.
   const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
   try {

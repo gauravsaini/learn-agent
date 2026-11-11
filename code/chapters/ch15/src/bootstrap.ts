@@ -1,4 +1,4 @@
-// 组合根：按章节能力选择基础设施、工具集、权限策略、Hook、TODO 观察器、Skill 目录、持久任务存储和后台作业 Supervisor。
+// Composition root: selects infrastructure, tool sets, permission policies, Hooks, TODO observers, Skill catalogs, persistent task stores, and background job Supervisors by chapter capabilities.
 import { NodeWorkspaceFileSystem } from "./adapters/filesystem.js";
 import { PowerShellRunner } from "./adapters/powershell.js";
 import type { CommandRunner } from "./core/commands.js";
@@ -31,19 +31,19 @@ import { registerTaskTools } from "./features/tasks.js";
 import type { TaskStore } from "./features/tasks.js";
 import { TodoTracker } from "./features/todos.js";
 
-// 固定身份与行为基线；动态渲染时作为 identity section 的起点，非动态时仍为完整 system prompt。
+// Fixed identity and behavioral baseline; serves as the starting point of the identity section in dynamic rendering, and remains the complete system prompt in non-dynamic mode.
 export const BASE_SYSTEM_PROMPT =
   "You are a coding agent. Use tools when needed, inspect their results, and answer accurately.";
-// 复杂任务的 TODO 跟踪指令，在动态和非动态模式下都适用。
+// TODO tracking instructions for complex tasks; applicable in both dynamic and non-dynamic modes.
 const TODO_SYSTEM_PROMPT =
   "\nFor complex tasks, call todo_write with the complete task snapshot and update it when the plan changes.";
-// Skill 目录插入提示，只在非动态模式下使用；动态模式下由 DynamicPromptRenderer 处理。
+// Skill catalog insertion prompt, used only in non-dynamic mode; handled by DynamicPromptRenderer in dynamic mode.
 const SKILLS_SYSTEM_PROMPT =
   "\n\nAvailable workspace Skills are listed below. Load one with load_skill only when its instructions are relevant:\n";
 const EMPTY_SKILLS_CATALOG = "(No workspace Skills are currently available.)";
 
-// P15 只在共享 Supervisor、Cron 与 mailbox 全部存在时注入 teammate 运行时。
-// P15 要求 teammate、Cron 与后台 Supervisor 共享事件收件箱，调度事件沿同一回注路径进入 Loop。
+// P15 injects teammate runtime only when shared Supervisor, Cron, and mailbox all exist.
+// P15 requires teammate, Cron, and background Supervisor to share event inbox; scheduled events enter the Loop along the same reinjection path.
 export interface BuildDependencies {
   readonly model: ModelClient;
   readonly workspace: string;
@@ -53,57 +53,57 @@ export interface BuildDependencies {
   readonly auditSink?: AuditSink;
   readonly hooks?: HookRegistry;
   readonly maxTurns?: number;
-  // identity 只用作动态 Prompt context 字段；缺省时回退为 "user"。
+  // identity is only used as a dynamic Prompt context field; defaults to "user" when omitted.
   readonly identity?: string;
-  // recoveryConfig 只在 P11+ 能力位上出现，由 CLI 或测试显式构造。
+  // recoveryConfig only appears on P11+ capability flags, constructed explicitly by CLI or tests.
   readonly recoveryConfig?: RecoveryConfig;
-  // taskStore 只在 P12+ 能力位上出现，与任务工具和子 Agent 共享同一持久化图。
+  // taskStore appears only on P12+ capability flags, sharing the same persistence graph with task tools and subagents.
   readonly taskStore?: TaskStore;
-  // backgroundSupervisor 只在 P13+ 能力位上出现，由 CLI 或测试显式构造。
+  // backgroundSupervisor only appears on P13+ capability flags, constructed explicitly by CLI or tests.
   readonly backgroundSupervisor?: JobSupervisor;
-  // cronRuntime 只在 P14+ 能力位上出现，并必须共享 backgroundSupervisor 的 EventInbox。
+  // cronRuntime only appears on P14+ capability flags and must share the backgroundSupervisor EventInbox.
   readonly cronRuntime?: CronRuntime;
   readonly teammateRuntime?: TeammateRuntime;
 }
 
 export function buildAgent(profile: ChapterProfile, dependencies: BuildDependencies): AgentRunner {
-  // 运行时校验 profile 引用相等性，防止调用方传入损坏或动态构造的 profile。
+  // The runtime validates profile reference equality to prevent callers from passing corrupted or dynamically constructed profiles.
   if (profileForChapter(profile.chapter) !== profile) {
     throw new Error("profile must be a fixed chapter profile");
   }
-  // hooks 能力在 P04 之前不可用，调用方传入 hooks 时须同时打开 hooks 能力位。
+  // hooks capability is unavailable before P04; callers passing hooks must also enable the hooks capability flag.
   if (dependencies.hooks !== undefined && !profile.capabilities.has("hooks")) {
     throw new Error("hooks require chapter 4 or later");
   }
   if (dependencies.recoveryConfig !== undefined && !profile.capabilities.has("recovery")) {
     throw new Error("recoveryConfig requires chapter 11 or later");
   }
-  // recovery 能力与配置必须成对出现，避免 P11 静默退化成 raw ModelClient。
+  // recovery capabilities and configurations must appear in pairs to prevent P11 silently degrading to raw ModelClient.
   if (profile.capabilities.has("recovery") && dependencies.recoveryConfig === undefined) {
     throw new Error("recoveryConfig is required for chapter 11 or later");
   }
-  // DAG 能力不能静默降级为内存任务，缺少持久化边界时直接拒绝组装。
+  // DAG capability must not silently degrade to in-memory tasks; rejects assembly directly when persistent boundary is missing.
   if (profile.capabilities.has("task_dag_json") && dependencies.taskStore === undefined) {
     throw new Error("taskStore is required for chapter 12 or later");
   }
   if (!profile.capabilities.has("task_dag_json") && dependencies.taskStore !== undefined) {
     throw new Error("taskStore requires chapter 12 or later");
   }
-  // 后台能力不能静默降级为同步 shell，缺少 Supervisor 时直接拒绝组装。
+  // Background capability cannot silently downgrade to synchronous shell; reject assembly directly when Supervisor is missing.
   if (profile.capabilities.has("background") && dependencies.backgroundSupervisor === undefined) {
     throw new Error("backgroundSupervisor is required for chapter 13 or later");
   }
   if (!profile.capabilities.has("background") && dependencies.backgroundSupervisor !== undefined) {
     throw new Error("backgroundSupervisor requires chapter 13 or later");
   }
-  // Cron 能力不能静默退化为仅后台事件，缺少共享 CronRuntime 时直接拒绝组装。
+  // Cron capability must not silently degrade to background events only; rejects assembly directly when shared CronRuntime is missing.
   if (profile.capabilities.has("cron") && dependencies.cronRuntime === undefined) {
     throw new Error("cronRuntime is required for chapter 14 or later");
   }
   if (!profile.capabilities.has("cron") && dependencies.cronRuntime !== undefined) {
     throw new Error("cronRuntime requires chapter 14 or later");
   }
-  // 拒绝分离的运行时，避免调度完成事件写入无人消费的 Inbox。
+  // Reject detached runtimes to avoid scheduling completion events into an unconsumed Inbox.
   if (
     dependencies.cronRuntime !== undefined &&
     (dependencies.backgroundSupervisor === undefined ||
@@ -118,7 +118,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   if (!profile.capabilities.has("teammate") && dependencies.teammateRuntime !== undefined) {
     throw new Error("teammateRuntime requires chapter 15 or later");
   }
-  // teammate 运行时也必须共享 Supervisor、Cron 和 EventInbox，否则队友消息无法并入同一事件队列。
+  // Teammate runtime must also share Supervisor, Cron, and EventInbox; otherwise teammate messages cannot join the same event queue.
   if (
     dependencies.teammateRuntime !== undefined &&
     (dependencies.backgroundSupervisor === undefined ||
@@ -143,17 +143,17 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
   );
   const tools = standardTools.tools;
   const todoTracker = standardTools.todoTracker;
-  // identity 缺省 fallback 与 AgentRunner 构造器一致，保证 context 字段始终非空。
+  // identity fallback matches AgentRunner constructor defaults, ensuring the context field is never empty.
   const identity = dependencies.identity === undefined ? "user" : dependencies.identity;
-  // dynamic_prompt 开启时由 DynamicPromptProvider 每轮重新渲染系统提示，关闭时回退静态字符串。
+  // When dynamic_prompt is enabled, DynamicPromptProvider re-renders system prompts each turn; when disabled, fall back to static strings.
   const dynamicPrompt = profile.capabilities.has("dynamic_prompt");
-  // 章节组装阶段扫描一次；运行时 load_skill 仍会复查真实路径。
+  // Scan once during chapter assembly; runtime load_skill still re-checks real paths.
   const skillRegistry = profile.capabilities.has("skills")
     ? SkillRegistry.scan(dependencies.workspace)
     : undefined;
-  // 权限策略由 profile 能力位决定；子代理复用同一策略，不能绕过父审批。
+  // Permission policy is decided by profile capabilities; subagents reuse the same policy and cannot bypass parent approval.
   const permissionPolicy = permissionPolicyForProfile(profile, fileSystem, dependencies);
-  // 同一压缩管理器同时服务请求历史和工具结果两条边界。
+  // The same compaction manager serves both request history and tool result boundaries.
   const compactionManager = profile.capabilities.has("compaction")
     ? new CompactionManager({
         workspace: dependencies.workspace,
@@ -161,9 +161,9 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       })
     : undefined;
   let modelRequestExecutor: RecoveryManager | undefined;
-  // 响应式压缩复用同一个 CompactionManager，保证协议组拆分规则与主动压缩一致。
+  // Reactive compaction reuses the same CompactionManager, ensuring protocol group splitting rules match proactive compaction.
   if (dependencies.recoveryConfig !== undefined) {
-    // recovery 依赖同一压缩管理器，prompt-too-long 时才能保持协议组完整地缩减历史。
+    // recovery relies on the same compaction manager to reduce history while keeping protocol groups intact on prompt-too-long.
     if (compactionManager === undefined) {
       throw new Error("recovery capability requires compaction");
     }
@@ -173,7 +173,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       config: dependencies.recoveryConfig,
     });
   }
-  // 启用动态 Prompt 时关闭 MemorySession.beforeModel() 的独立消息注入，由 Provider 统一输出记忆正文。
+  // When enabling dynamic prompts, disable standalone MemorySession.beforeModel() message injection; Provider outputs memory content uniformly.
   const memorySession = profile.capabilities.has("memory")
     ? createMemorySession(dependencies, !dynamicPrompt)
     : undefined;
@@ -181,7 +181,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     dependencies.hooks === undefined && profile.capabilities.has("hooks")
       ? new HookRegistry()
       : dependencies.hooks;
-  // 子代理在 P06+ 启用，要求 hooks 与 permissionPolicy 共同构成跨 Agent 边界。
+  // Subagents are enabled in P06+, requiring hooks and permissionPolicy to form cross-Agent boundaries together.
   if (profile.capabilities.has("subagent")) {
     if (hooks === undefined || permissionPolicy === undefined) {
       throw new Error("subagent capability requires hooks and permission policy");
@@ -190,11 +190,11 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       modelFactory: () => dependencies.model,
       toolsFactory: () => {
         const childTools = createStandardTools(profile, commandRunner, fileSystem, false).tools;
-        // 子代理共享 Skill 元数据快照，但每次创建独立工具注册表，避免跨任务状态泄漏。
+        // Subagents share Skill metadata snapshots, but create an independent Tool Registry each time to prevent state leaks across tasks.
         if (skillRegistry !== undefined) {
           childTools.register(skillRegistry.toolDefinition);
         }
-        // 子 Agent 与主 Agent 使用同一个 TaskStore，看到的是同一张项目图。
+        // Subagents and the main Agent use the same TaskStore and see the same project graph.
         if (dependencies.taskStore !== undefined) {
           registerTaskTools(childTools, dependencies.taskStore);
         }
@@ -205,30 +205,30 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     });
     tools.register(subagent.toolDefinition);
   }
-  // 主 Agent 固定注册技能工具，保持工具列表顺序稳定。
+  // Primary Agent registers Skill tools statically to keep the tool list order stable.
   if (skillRegistry !== undefined) {
     tools.register(skillRegistry.toolDefinition);
   }
-  // 主 Agent 直接注册持久任务工具，与子 Agent 使用同一个 TaskStore。
+  // Primary Agent directly registers persistent task tools and shares the same TaskStore with subagents.
   if (dependencies.taskStore !== undefined) {
     registerTaskTools(tools, dependencies.taskStore);
   }
   if (dependencies.backgroundSupervisor !== undefined) {
-    // 主 Agent 注册后台查询与取消工具；子 Agent 不接收后台 Supervisor，因此不暴露这些能力。
+    // Primary Agent registers background query and cancellation tools; subagents receive no background Supervisor, so do not expose these capabilities.
     registerBackgroundJobTools(tools, dependencies.backgroundSupervisor);
   }
-  // P14 注册 schedule_cron，调度事件经同一 Supervisor/Inbox 回注 Loop。
+  // P14 registers schedule_cron; scheduled events inject back into the Loop through the same Supervisor/Inbox.
   if (dependencies.cronRuntime !== undefined) {
     tools.register(dependencies.cronRuntime.toolDefinition);
   }
-  // P15 注册 spawn_teammate 与 send_message，工具标 effect external 允许转后台。
+  // P15 registers spawn_teammate and send_message; tools marked with effect external may transfer to background.
   if (dependencies.teammateRuntime !== undefined) {
-    // 队友只有四个工具：shell/read_file/write_file 加 send_message，身份由 Runner 自己的 identity 提供。
+    // Teammates have only four tools: shell, read_file, write_file, and send_message; identity is provided by the Runner own identity.
     tools.register(dependencies.teammateRuntime.spawnToolDefinition);
     tools.register(dependencies.teammateRuntime.sendToolDefinition);
     const teammateRuntime = dependencies.teammateRuntime;
     teammateRuntime.configureRunnerFactory((name, role, sendDefinition) => {
-      // 每个队友复用同一治理链：Hook、PermissionPolicy、Recovery 和 Compaction，但持有独立 history。
+      // Each teammate reuses the same governance chain: Hook, PermissionPolicy, Recovery, and Compaction, while holding an independent history.
       const teammateTools = standardTools.tools.subset(["shell", "read_file", "write_file"]);
       teammateTools.register(sendDefinition);
       const teammateCompaction = new CompactionManager({
@@ -259,7 +259,7 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
       });
     });
   }
-  // 只有 P13 才注入 BackgroundDispatcher；同步章节仍直接调用 ToolRegistry，不改变权限和 Hook 顺序。
+  // Inject BackgroundDispatcher only in P13; synchronous chapters still call ToolRegistry directly without changing permission and Hook order.
   const toolDispatcher: ToolDispatcher | undefined =
     dependencies.backgroundSupervisor === undefined
       ? undefined
@@ -281,17 +281,17 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
         ...(memorySession === undefined ? {} : { memory: memorySession }),
       })
     : undefined;
-  // P15 优先使用 TeammateRuntime 作为事件泵（它委派 CronRuntime 的 drain/wait/ack）；未启用 teammate 时退回 Cron/Background。
+  // P15 prioritizes TeammateRuntime as event pump (delegating drain/wait/ack to CronRuntime); falls back to Cron/Background when teammate is not enabled.
   const eventPump =
     dependencies.teammateRuntime ?? dependencies.cronRuntime ?? dependencies.backgroundSupervisor;
-  // 资源按注入顺序保存，AgentRunner.close() 逆序关闭；Teammate 在 Cron 和 Supervisor 之后注入，因此先关闭。
+  // Resources are stored in injection order and closed in reverse order by AgentRunner.close(); Teammate is injected after Cron and Supervisor, so it closes first.
   const resources: readonly AsyncResource[] = Object.freeze([
     ...(dependencies.backgroundSupervisor === undefined ? [] : [dependencies.backgroundSupervisor]),
     ...(dependencies.cronRuntime === undefined ? [] : [dependencies.cronRuntime]),
     ...(dependencies.teammateRuntime === undefined ? [] : [dependencies.teammateRuntime]),
   ]);
   return new AgentRunner({
-    // 固定 systemPrompt 保留为 fallback；provider 存在时每轮通过 render() 获取渲染结果。
+    // Retain fixed systemPrompt as fallback; get rendered results through render() each turn when provider exists.
     model: dependencies.model,
     tools,
     systemPrompt,
@@ -304,20 +304,20 @@ export function buildAgent(profile: ChapterProfile, dependencies: BuildDependenc
     ...(compactionManager === undefined
       ? {}
       : {
-          // 请求历史在模型调用前准备；工具结果在回填 canonical history 前经处理器。
+          // Request history is prepared before model calls; tool results pass through processors before backfilling into canonical history.
           historyProcessor: compactionManager,
           toolResultProcessor: async (results) =>
             (await compactionManager.compactToolResults(results)).results,
         }),
-    // 记忆生命周期与请求级压缩互补：压缩改变模型看到的旧历史，记忆在回合边界读写持久层。
+    // Memory lifecycle and request-level compaction complement each other: compaction changes past history seen by the model, while memory reads and writes persistence at turn boundaries.
     ...(memorySession === undefined ? {} : { turnLifecycle: memorySession }),
-    // 有 RecoveryManager 时接管模型请求以支持重试、fallback 和长度恢复。
+    // When RecoveryManager exists, take over model requests to support retry, fallback, and length recovery.
     ...(modelRequestExecutor === undefined ? {} : { modelRequestExecutor }),
-    // 后台分派器让 concurrency=background_eligible 的工具异步执行。
+    // Background dispatcher allows tools with concurrency=background_eligible to execute asynchronously.
     ...(toolDispatcher === undefined ? {} : { toolDispatcher }),
-    // 事件泵向 Agent Loop 单向注入后台终态，每轮模型请求前先消费。
+    // Event pump injects terminal background states unidirectionally into Agent Loop, consumed before each model request.
     ...(eventPump === undefined ? {} : { eventPump }),
-    // 外部资源在 close() 时逆序释放；Teammate 先于 Cron，Cron 先于 Supervisor。
+    // External resources release in reverse order on close(); Teammate before Cron, Cron before Supervisor.
     ...(resources.length === 0 ? {} : { resources }),
     ...(dependencies.maxTurns === undefined ? {} : { maxTurns: dependencies.maxTurns }),
   });
@@ -327,7 +327,7 @@ function createMemorySession(
   dependencies: BuildDependencies,
   emitContextMessages: boolean,
 ): MemorySession {
-  // emitContextMessages 为 false 时关闭 MemorySession.beforeModel() 的独立注入。
+  // When emitContextMessages is false, disable independent injection of MemorySession.beforeModel().
   const queries = new ModelMemoryQueries(dependencies.model);
   return new MemorySession({
     store: new MemoryStore({ workspace: dependencies.workspace }),
@@ -343,7 +343,7 @@ interface StandardTools {
   readonly todoTracker?: TodoTracker;
 }
 
-// createStandardTools 封装章节通用工具注册：先创建 shell 与文件工具集，再按 profile 能力决定是否追加 todo 工具。
+// createStandardTools encapsulates chapter tool registration: create shell and file tools first, then append todo tools based on profile capabilities.
 function createStandardTools(
   profile: ChapterProfile,
   commandRunner: CommandRunner,
@@ -362,31 +362,31 @@ function createStandardTools(
   return Object.freeze({ tools, todoTracker });
 }
 
-// permissionPolicyForProfile 根据 profile 的 policy 能力组合权限策略；子代理复用同一套策略。
+// permissionPolicyForProfile composes permission policies based on profile policy capabilities; subagents reuse the same policies.
 function permissionPolicyForProfile(
   profile: ChapterProfile,
   fileSystem: WorkspaceFileSystem,
   dependencies: BuildDependencies,
 ): PermissionPolicy | undefined {
-  // 没有 policy 能力时只接受外部注入的 approvalProvider；审计与写边界由外部控制。
+  // Accept only externally injected approvalProvider when lacking policy capability; external controls manage audit and write boundaries.
   if (!profile.capabilities.has("policy")) {
     return dependencies.approvalProvider === undefined
       ? undefined
       : new PermissionPolicy({ approval: dependencies.approvalProvider });
   }
-  // 有 policy 能力时必须同时提供 approvalProvider，否则干脆断开发起路径。
+  // When policy capability exists, provide approvalProvider as well; otherwise, disconnect the origination path completely.
   if (dependencies.approvalProvider === undefined) {
     throw new Error("approvalProvider is required for chapter 3 or later");
   }
-  // policy 能力要求可审计的决策记录，缺少审计 sink 时拒绝启动。
+  // policy capability requires auditable decision records; startup is rejected when an audit sink is missing.
   if (dependencies.auditSink === undefined) {
     throw new Error("auditSink is required for chapter 3 or later");
   }
   return new PermissionPolicy({
-    // 只提升写入工具；Shell 的执行审批由策略默认规则统一处理。
+    // Promote only write tools; default policy rules handle Shell execution approval.
     rules: [
       new PermissionRule({
-        // 文件写入审批规则：只有 write_file/edit_file 触发确认弹窗。
+        // File write approval rule: only write_file and edit_file trigger the confirmation dialog.
         name: "confirm-file-write",
         behavior: "ask",
         reason: "File writes require explicit approval from chapter 3 onward",

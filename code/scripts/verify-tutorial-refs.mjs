@@ -1,5 +1,5 @@
-// 核对教程正文引用的代码路径、npm 脚本与符号名是否在对应章节快照中真实存在。
-// 用法: node scripts/verify-tutorial-refs.mjs [章号...]
+// Verify whether code paths, npm scripts, and symbol names in tutorial text actually exist in the corresponding chapter snapshot.
+// Usage: node scripts/verify-tutorial-refs.mjs [chapter-numbers...]
 import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +51,7 @@ for (const article of articles) {
     await stat(dir);
     files = await walk(dir);
   } catch {
-    console.log(`\n### ch${article.chapter}: 快照目录不存在，跳过`);
+    console.log(`\n### ch${article.chapter}: Snapshot directory does not exist, skipping`);
     continue;
   }
   const fileSet = new Set(files);
@@ -59,7 +59,7 @@ for (const article of articles) {
 
   const problems = [];
 
-  // 1) 引用的 src/ 或 tests/ 相对路径
+  // 1) Referenced src/ or tests/ relative paths
   const pathRefs = new Set();
   for (const m of text.matchAll(/`((?:src|tests)\/[A-Za-z0-9_./-]+\.[a-z]+)`/g)) pathRefs.add(m[1]);
   for (const m of text.matchAll(
@@ -68,7 +68,7 @@ for (const article of articles) {
     if (Number(m[1]) === article.chapter) pathRefs.add(m[2]);
     else pathRefs.add(`ch${m[1]}:${m[2]}`);
   }
-  // ESM import 说明符写作 .js，实际文件是 .ts，需要等价折叠。
+  // ESM import specifiers are written as .js while actual files are .ts; equivalent folding is required.
   const exists = (rel, set) =>
     set.has(rel) || (rel.endsWith(".js") && set.has(`${rel.slice(0, -3)}.ts`));
 
@@ -76,28 +76,28 @@ for (const article of articles) {
     if (ref.includes(":")) {
       const [chTag, rel] = ref.split(":");
       const otherFiles = new Set(await walk(chapterDir(Number(chTag.slice(2)))));
-      if (!exists(rel, otherFiles)) problems.push(`跨章路径不存在: chapters/${chTag}/${rel}`);
+      if (!exists(rel, otherFiles)) problems.push(`Cross-chapter path does not exist: chapters/${chTag}/${rel}`);
       continue;
     }
-    if (!exists(ref, fileSet)) problems.push(`路径不存在于本章快照: ${ref}`);
+    if (!exists(ref, fileSet)) problems.push(`Path does not exist in this chapter snapshot: ${ref}`);
   }
 
-  // 2) npm 脚本
+  // 2) npm scripts
   for (const m of text.matchAll(/npm run ([a-zA-Z0-9:_-]+)/g)) {
-    if (!scriptNames.has(m[1])) problems.push(`npm script 不存在: ${m[1]}`);
+    if (!scriptNames.has(m[1])) problems.push(`npm script does not exist: ${m[1]}`);
   }
 
-  // 3) 文件名裸引用（形如 `loop.ts`）
+  // 3) Bare file name references (such as `loop.ts`)
   for (const m of text.matchAll(/`([a-z0-9][a-z0-9-]*\.ts)`/g)) {
     if (!basenames.has(m[1]) && !m[1].endsWith(".d.ts")) {
-      problems.push(`文件名未在本章快照出现: ${m[1]}`);
+      problems.push(`File name does not appear in this chapter snapshot: ${m[1]}`);
     }
   }
 
   const unique = [...new Set(problems)];
   totalProblems += unique.length;
-  console.log(`\n### ch${article.chapter} (${article.name.slice(0, 40)}...) 问题 ${unique.length}`);
+  console.log(`\n### ch${article.chapter} (${article.name.slice(0, 40)}...) problems ${unique.length}`);
   for (const p of unique) console.log(`  - ${p}`);
 }
 
-console.log(`\n合计问题: ${totalProblems}`);
+console.log(`\nTotal problems: ${totalProblems}`);

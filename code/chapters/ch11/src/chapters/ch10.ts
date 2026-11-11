@@ -1,5 +1,5 @@
 import { runProfile } from "../cli.js";
 import { P10 } from "../core/profiles.js";
 
-// 固定入口启用 P10 的动态系统提示渲染。
+// Fixed entrypoint enables P10 dynamic system prompt rendering.
 process.exitCode = await runProfile(P10, process.argv.slice(2));

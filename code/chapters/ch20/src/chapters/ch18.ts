@@ -1,5 +1,5 @@
 import { runProfile } from "../cli.js";
 import { P18 } from "../core/profiles.js";
 
-// 固定入口启用 P18 的任务到 Git worktree 隔离运行时。
+// Fixed entrypoint enables P18 task-to-Git worktree isolation runtime.
 process.exitCode = await runProfile(P18, process.argv.slice(2));

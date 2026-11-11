@@ -1,4 +1,4 @@
-// JsonTaskStore 把 P12 任务 DAG 持久化到 workspace 的 .agent_tutorial/.tasks，并以文件锁串行化状态迁移。
+// JsonTaskStore persists P12 task DAG to workspace .agent_tutorial/.tasks and serializes state transitions with file locks.
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
@@ -39,7 +39,7 @@ const MAX_WINDOWS_LOCK_RACE_RETRIES = 100;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const PROCESS_LOCK_TAILS = new Map<string, Promise<void>>();
 
-// JSON 适配器用进程内队列加跨进程锁串行化读改写，并以原子替换发布图快照。
+// JSON adapter serializes read-modify-writes via in-process queue and cross-process lock, publishing graph snapshots by atomic replacement.
 interface JsonTaskPaths {
   readonly workspace: string;
   readonly root: string;
@@ -53,13 +53,13 @@ export interface JsonTaskStoreOptions {
 }
 
 export class JsonTaskStore implements TaskStore {
-  // 每次状态迁移都在同一锁内重载、校验并持久化完整任务图。
+  // Reload, validate, and persist the complete task graph within the same lock on each state transition.
   readonly #workspaceInput: string;
   readonly #idGenerator: () => string;
   readonly #atomicReplace: (path: string, content: Buffer) => Promise<void>;
 
   constructor(workspace: string, options: JsonTaskStoreOptions = {}) {
-    // 构造器只校验外部边界；idGenerator/atomicReplace 是测试可注入的确定性和故障点。
+    // Constructor validates only external boundaries; idGenerator and atomicReplace are test-injectable determinism and failure injection points.
     if (typeof workspace !== "string" || workspace.trim().length === 0) {
       throw new TypeError("workspace must be a non-empty string");
     }
@@ -75,13 +75,13 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async createTask(input: CreateTaskInput): Promise<Task> {
-    // createTask 在锁内重载图、校验无环和唯一 ID，然后原子写入任务。
+    // createTask reloads the graph within the lock, verifies acyclicity and unique IDs, then atomically writes tasks.
     const paths = await this.#preparePaths(true);
     if (paths === undefined) {
       throw new TaskStorageError("Task storage root could not be created");
     }
     return await this.#withLock(paths, async () => {
-      // 锁内重建整张图，按“无碰撞 -> 依赖存在 -> 无自依赖 -> 全图无环”的顺序决定是否写入。
+      // Reconstructs the entire graph within the lock, deciding whether to write in order: "no collision -> dependency exists -> no self-dependency -> entire graph acyclic".
       const graph = await this.#loadGraph(paths);
       const id = this.#generatedId();
       if (graph.has(id)) {
@@ -110,7 +110,7 @@ export class JsonTaskStore implements TaskStore {
       throw new TaskNotFoundError(`Task not found: ${id}`);
     }
     return await this.#withLock(paths, async () => {
-      // 锁内重读全图后重新计算阻塞：即使锁外任务刚变 ready，临界区内也只能看到最新图。
+      // Re-reads the entire graph and recalculates blocking within the lock: Even if a task outside the lock just became ready, only the latest graph is visible in the critical section.
       const task = (await this.#loadGraph(paths)).get(id);
       if (task === undefined) {
         throw new TaskNotFoundError(`Task not found: ${id}`);
@@ -184,7 +184,7 @@ export class JsonTaskStore implements TaskStore {
       const completed = new Task({ ...task, status: TaskStatus.COMPLETED });
       const candidate = new Map(graph);
       candidate.set(id, completed);
-      // 只报告直接依赖完成且全部依赖都已 completed 的 pending Task，不改写下游文件。
+      // Report only pending Tasks whose direct dependencies finished and all dependencies are completed; do not rewrite downstream files.
       const unblocked = [...candidate.values()]
         .filter(
           (dependent) =>
@@ -201,7 +201,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async #preparePaths(create: boolean): Promise<JsonTaskPaths | undefined> {
-    // 每次操作都重新 realpath workspace，再校验 .agent_tutorial/.tasks 未逃逸。
+    // Re-resolve realpath of workspace and verify .agent_tutorial/.tasks has not escaped on every operation.
     let workspace: string;
     try {
       workspace = await realpath(this.#workspaceInput);
@@ -240,7 +240,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async #validatePaths(paths: JsonTaskPaths): Promise<void> {
-    // 每次操作前再次校验 root/tasks/lock 的物理路径，防止符号链接逃逸。
+    // Revalidate physical paths of root/tasks/lock before each operation to prevent symlink escapes.
     await this.#validateRoot(paths.workspace, paths.root);
     let resolvedRoot: string;
     let resolvedTasks: string;
@@ -270,7 +270,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async #validateRoot(workspace: string, root: string): Promise<void> {
-    // root 必须是 workspace 内的真实目录；创建后与每次读取前都复查。
+    // root must be a real directory within workspace; re-check after creation and before each read.
     let resolvedRoot: string;
     try {
       resolvedRoot = await realpath(root);
@@ -286,7 +286,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async #withLock<T>(paths: JsonTaskPaths, operation: () => Promise<T>): Promise<T> {
-    // 进程内队列 + 跨进程文件锁保证同一图上的读改写是一个临界区。
+    // In-process queue and cross-process file lock ensure read-modify-write on the same graph is a single critical section.
     return await withProcessMutex(paths.tasks, async () => {
       let release: (() => Promise<void>) | undefined;
       let windowsRaceRetries = 0;
@@ -329,7 +329,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async #loadGraph(paths: JsonTaskPaths): Promise<Map<string, Task>> {
-    // 重建必须加载并校验整张图；任一文件损坏都让整个 store 明确失败。
+    // Reconstruction must load and validate the entire graph; any corrupted file causes the entire store to fail explicitly.
     let entries: readonly Dirent[];
     try {
       entries = (await readdir(paths.tasks, { withFileTypes: true }))
@@ -371,7 +371,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async #writeTask(paths: JsonTaskPaths, task: Task): Promise<void> {
-    // 保存始终走原子替换，失败时旧文件保持不变。
+    // Save operations always use atomic replacement; old file remains unchanged on failure.
     try {
       await this.#atomicReplace(join(paths.tasks, `${task.id}.json`), serializeTask(task));
     } catch (error) {
@@ -398,7 +398,7 @@ export class JsonTaskStore implements TaskStore {
 }
 
 function parseStoredTask(value: unknown): Task {
-  // 磁盘 schema 必须精确匹配六个字段；额外或缺失字段都会让整张图恢复失败。
+  // The on-disk schema must match exactly six fields; extra or missing fields cause recovery of the entire graph to fail.
   if (!hasExactKeys(value, ["id", "subject", "description", "status", "owner", "blocked_by"])) {
     throw new TaskStorageError("Task file has an invalid schema");
   }
@@ -434,7 +434,7 @@ function parseStoredTask(value: unknown): Task {
 }
 
 function serializeTask(task: Task): Buffer {
-  // 固定字段顺序和结尾换行，让任务文件可 diff、可审计，也避免写盘内容随机漂移。
+  // Fix field order and trailing newline so task files remain diffable and auditable, avoiding random disk write drift.
   const payload = {
     blocked_by: [...task.blockedBy],
     description: task.description,
@@ -447,7 +447,7 @@ function serializeTask(task: Task): Buffer {
 }
 
 function validateGraph(graph: ReadonlyMap<string, Task>): void {
-  // 写入前验证依赖引用和环，保证后续 claim/complete 只处理有效 DAG。
+  // Validates dependency references and cycles before writing, ensuring subsequent claim/complete operations process only valid DAGs.
   for (const task of graph.values()) {
     for (const dependency of task.blockedBy) {
       if (dependency === task.id) {
@@ -484,7 +484,7 @@ function validateGraph(graph: ReadonlyMap<string, Task>): void {
 }
 
 async function atomicReplace(path: string, content: Buffer): Promise<void> {
-  // 同目录临时文件先 sync，再用 rename 发布；最终路径从不暴露半写内容。
+  // Sync temporary files in the same directory before publishing via rename; final paths never expose partially written content.
   const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
   try {
@@ -503,7 +503,7 @@ async function atomicReplace(path: string, content: Buffer): Promise<void> {
 }
 
 async function withProcessMutex<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  // 同一进程内的并发操作也排队，跨进程部分由文件锁保证。
+  // Concurrent operations in the same process also queue; file locks guarantee cross-process safety.
   const previous = PROCESS_LOCK_TAILS.get(key);
   const result = previous === undefined ? operation() : previous.then(operation);
   const tail = result.then(

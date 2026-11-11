@@ -1,33 +1,33 @@
 /**
- * 工具注册表模块：将工具的名称、描述、Zod schema、副作用分类和处理函数绑定为单一闭包。
- * Agent Loop 通过 prepare → invoke 调用，不在循环里 switch 工具名称。
- * prepare 把所有模型输入错误（未知工具、坏 JSON、非法参数）封装为 ToolResult，
- * 因此非法参数不会先执行再报错。snapshot 返回不可变副本，确保本轮工具定义不会中途变化。
- * openAITools 按注册顺序稳定导出，与 KV Cache 前缀稳定性约束一致。
+ * Tool Registry module: binds tool name, description, Zod schema, effect class, and handler into a single closure.
+ * The Agent Loop invokes tools through prepare → invoke. It does not switch on tool names in the loop.
+ * prepare encapsulates all model input errors (unknown tool, bad JSON, invalid arguments) into ToolResult,
+ * Invalid arguments fail before execution. snapshot returns an immutable copy so tool definitions do not change mid-turn.
+ * openAITools exports stably in registration order to match KV Cache prefix stability constraints.
  */
 import { z } from "zod";
 
 import type { ToolCall } from "./messages.js";
 import type { OpenAIToolSchema } from "./model.js";
 
-// 工具注册表把 schema、模型描述和执行器绑定，避免三份定义漂移。
+// The Tool Registry binds schemas, model descriptions, and executors to avoid drift across three definitions.
 export type EffectClass = "read" | "write" | "execute" | "external";
 
 export interface ToolContext {
-  // identity 和幂等键为后续策略层预留；P02 执行器只使用 workspace。
+  // identity and idempotency key are reserved for future policy layers; P02 executor only uses workspace.
   readonly workspace: string;
-  // 调用主体标识，为后续权限策略提供稳定输入。
+  // Caller principal identity, providing stable input for subsequent permission policies.
   readonly identity: string;
-  // 可选去重键，为具副作用重试保留关联。
+  // Optional deduplication key to preserve correlation for retries with side effects.
   readonly idempotencyKey?: string;
 }
 
 export interface ToolResult {
-  // 模型可读取的成功输出或错误正文。
+  // Successful output or error body readable by the model.
   readonly content: string;
-  // 是否为错误结果，决定 errorCode 的约束。
+  // Whether the result is an error, determining constraints on errorCode.
   readonly isError: boolean;
-  // 错误时必须存在的机器可读稳定码。
+  // Machine-readable stable code that must exist on error.
   readonly errorCode?: string;
 }
 
@@ -35,7 +35,7 @@ export function toolSuccess(content: string): ToolResult {
   return Object.freeze({ content, isError: false });
 }
 
-// 错误结果仍作为 tool message 回填，使模型能基于稳定错误码自主调整。
+// Error results are still backfilled as tool messages, allowing the model to adapt autonomously based on stable error codes.
 export function toolError(errorCode: string, message: string): ToolResult {
   if (errorCode.trim().length === 0) {
     throw new Error("tool error code must not be empty");
@@ -48,19 +48,19 @@ export function toolError(errorCode: string, message: string): ToolResult {
 }
 
 export interface ToolDefinition<Input> {
-  // 提供给模型和注册表的稳定工具名。
+  // The stable tool name provided to the model and registry.
   readonly name: string;
-  // 面向模型的使用说明。
+  // Usage instructions for the model.
   readonly description: string;
-  // 在执行前校验模型 JSON 参数的 Zod schema。
+  // Validate the Zod schema of model JSON parameters before execution.
   readonly inputSchema: z.ZodType<Input>;
-  // 权限策略使用的副作用分类。
+  // Effect classifications used by permission policies.
   readonly effect: EffectClass;
-  // 已验证输入的实际执行器，可同步或异步返回统一结果。
+  // Actual executor for validated inputs, returning uniform results synchronously or asynchronously.
   readonly handler: (input: Input, context: ToolContext) => Promise<ToolResult> | ToolResult;
 }
 
-// 注册后擦除泛型输入的内部定义，统一由 invoke 调用。
+// Internal definition erasing generic inputs after registration, uniformly invoked by invoke.
 export interface StoredToolDefinition {
   readonly name: string;
   readonly description: string;
@@ -70,34 +70,34 @@ export interface StoredToolDefinition {
 }
 
 export interface PreparedToolCall {
-  // prepare 不抛出模型输入错误，而是保存可安全回填的 error。
+  // prepare does not throw model input errors; it saves errors that can be safely backfilled.
   readonly call: ToolCall;
-  // 成功或已识别参数错误时对应的注册工具。
+  // Registered tool corresponding to success or identified parameter errors.
   readonly definition?: StoredToolDefinition;
-  // 通过 schema 的参数对象；存在时才允许执行。
+  // Argument object that passed schema validation; execution is allowed only when present.
   readonly arguments?: unknown;
-  // 模型输入失败时可直接回填的结果。
+  // Results backfilled directly when model input fails.
   readonly error?: ToolResult;
 }
 
 export class ToolRegistry {
-  // 按名称保存唯一工具定义。
+  // Store unique tool definitions by name.
   readonly #definitions: Map<string, StoredToolDefinition>;
-  // false 表示每轮模型请求使用的不可写快照。
+  // false indicates an unwriteable snapshot used for each model request turn.
   readonly #mutable: boolean;
 
-  // 复制定义映射，避免外部 Map 继续改变当前注册表。
+  // Copy definition mappings to prevent external Maps from further modifying the current registry.
   constructor(definitions: ReadonlyMap<string, StoredToolDefinition> = new Map(), mutable = true) {
     this.#definitions = new Map(definitions);
     this.#mutable = mutable;
   }
 
-  // 返回冻结名称列表，供诊断读取而不暴露内部 Map。
+  // Returns a frozen name list for diagnostics without exposing the internal Map.
   get names(): readonly string[] {
     return Object.freeze([...this.#definitions.keys()]);
   }
 
-  // 校验元数据并注册工具，将泛型 handler 封装为统一的运行期入口。
+  // Validate metadata and register tools, wrapping generic handlers into unified runtime entry points.
   register<Input>(definition: ToolDefinition<Input>): void {
     if (!this.#mutable) {
       throw new Error("tool registry snapshot is immutable");
@@ -118,21 +118,21 @@ export class ToolRegistry {
       inputSchema: definition.inputSchema,
       effect: definition.effect,
       invoke: async (input, context) =>
-        // 再次 parse 保证任何绕过 prepare 的内部调用也不能越过 schema。
+        // Re-parsing guarantees that internal calls bypassing prepare cannot circumvent the schema.
         definition.handler(definition.inputSchema.parse(input), context),
     };
     this.#definitions.set(definition.name, stored);
   }
 
-  // 创建不可写副本，使模型可见工具集与本轮实际执行集一致。
+  // Creates non-writable copy, matching model-visible tool set with the set actually executed in this turn.
   snapshot(): ToolRegistry {
-    // 模型请求使用不可变快照，确保本轮工具集不会在调用途中改变。
+    // Model requests use immutable snapshots, ensuring this turn's toolset does not change mid-call.
     return new ToolRegistry(this.#definitions, false);
   }
 
-  // 从注册定义稳定生成 OpenAI JSON Schema，避免与 handler 平行维护。
+  // Stably generates OpenAI JSON Schema from registration definition to avoid parallel maintenance with handler.
   openAITools(): readonly OpenAIToolSchema[] {
-    // 每次导出都生成 JSON Schema，模型描述与实际校验器保持同源。
+    // Generate JSON Schema on every export, keeping model descriptions and actual validators from the same source.
     return Object.freeze(
       [...this.#definitions.values()].map((definition) => ({
         type: "function" as const,
@@ -145,9 +145,9 @@ export class ToolRegistry {
     );
   }
 
-  // 查找工具、解析 JSON 并执行 schema 校验；错误转换为可回填结果而不抛出。
+  // Find tool, parse JSON, and validate schema; convert errors into backfillable results instead of throwing.
   prepare(call: ToolCall): PreparedToolCall {
-    // 参数错误也被封装为结果，Agent Loop 仍可回填对应 tool message。
+    // Argument errors are also packaged as results so the Agent Loop can backfill corresponding tool messages.
     const definition = this.#definitions.get(call.name);
     if (definition === undefined) {
       return { call, error: toolError("unknown_tool", `Unknown tool: ${call.name}`) };
@@ -182,7 +182,7 @@ export class ToolRegistry {
     return { call, definition, arguments: parsed.data };
   }
 
-  // 执行已准备调用，并把 handler 异常或无效返回值规范化为 ToolResult。
+  // Execute prepared calls and normalize handler exceptions or invalid return values to ToolResults.
   async invoke(prepared: PreparedToolCall, context: ToolContext): Promise<ToolResult> {
     if (prepared.error !== undefined) {
       return prepared.error;
@@ -197,15 +197,15 @@ export class ToolRegistry {
       }
       return result;
     } catch {
-      // 执行器异常不得破坏消息配对协议，统一降级为可回填错误结果。
+      // Executor exceptions must not break message pairing protocols; degrade uniformly to backfillable error results.
       return toolError("tool_execution_error", "Tool execution failed");
     }
   }
 }
 
-// 在运行期收窄扩展 handler 的返回值，阻止无效对象进入消息历史。
+// Narrow the return value of extension handlers at runtime to block invalid objects from entering message history.
 function isToolResult(value: unknown): value is ToolResult {
-  // 执行器是扩展边界，运行时复核返回形状后才写入对话历史。
+  // Executors are extension boundaries; verify return shapes at runtime before writing to conversation history.
   if (typeof value !== "object" || value === null) {
     return false;
   }

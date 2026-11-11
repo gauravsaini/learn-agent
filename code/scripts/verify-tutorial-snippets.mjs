@@ -1,7 +1,7 @@
-// 核对教程中的 TypeScript 代码块能否在本章快照源码中找到对应实现。
-// 做法：取代码块中"有辨识度"的行（长度足够、非注释、非纯括号），
-// 在本章 src/ 下做归一化空白后的子串匹配。命中率过低说明教程与代码可能脱节。
-// 用法: node scripts/verify-tutorial-snippets.mjs [章号...] [--verbose]
+// Verify whether TypeScript code blocks in the tutorial find matching implementations in this chapter snapshot source.
+// Approach: take distinctive lines from code blocks (sufficient length, non-comment, not purely brackets),
+// Perform substring matching after normalizing whitespace under src/ of this chapter. A low match rate indicates the tutorial and code might be out of sync.
+// Usage: node scripts/verify-tutorial-snippets.mjs [chapter-numbers...] [--verbose]
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,13 +45,13 @@ function normalize(text) {
   return text.replace(/\s+/g, " ");
 }
 
-// 判断一行是否"有辨识度"，值得用于匹配。
+// Determine whether a line has "enough distinction" to use for matching.
 function isDistinctive(line) {
   const t = line.trim();
   if (t.length < 24) return false;
   if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return false;
   if (/^[)}\];,]+$/.test(t)) return false;
-  if (t.startsWith("...")) return false; // 省略号占位
+  if (t.startsWith("...")) return false; // Ellipsis placeholder
   if (t.includes("…")) return false;
   return true;
 }
@@ -62,7 +62,7 @@ for (const article of articles) {
   const text = await readFile(join(repoRoot, article.name), "utf8");
   const sources = await readAllSources(article.chapter);
   if (sources.length === 0) {
-    console.log(`### ch${article.chapter}: 无快照源码，跳过`);
+    console.log(`### ch${article.chapter}: No snapshot source code, skipping`);
     continue;
   }
 
@@ -90,13 +90,13 @@ for (const article of articles) {
   grandMiss += missed;
   const rate = checked === 0 ? 1 : (checked - missed) / checked;
   console.log(
-    `### ch${String(article.chapter).padStart(2, " ")} 代码块 ${blocks.length} 行检查 ${checked} 未命中 ${missed} 命中率 ${(rate * 100).toFixed(1)}%`,
+    `### ch${String(article.chapter).padStart(2, " ")} code blocks ${blocks.length} lines checked ${checked} missed ${missed} hit rate ${(rate * 100).toFixed(1)}%`,
   );
   if (verbose) {
     for (const d of missDetail.slice(0, 40)) console.log(`    ? ${d}`);
-    if (missDetail.length > 40) console.log(`    ... 共 ${missDetail.length} 条`);
+    if (missDetail.length > 40) console.log(`    ... total ${missDetail.length} items`);
   }
 }
 console.log(
-  `\n合计: 检查 ${grandTotal} 行，未命中 ${grandMiss}，命中率 ${(((grandTotal - grandMiss) / grandTotal) * 100).toFixed(1)}%`,
+  `\nTotal: checked ${grandTotal} lines, missed ${grandMiss}, hit rate ${(((grandTotal - grandMiss) / grandTotal) * 100).toFixed(1)}%`,
 );

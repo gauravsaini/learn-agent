@@ -6,55 +6,55 @@ import type { ModelClient, ModelRequest } from "./model.js";
 import type { PreparedToolCall, ToolContext, ToolRegistry, ToolResult } from "./tools.js";
 import { toolError } from "./tools.js";
 
-// Agent Loop 的状态机：模型回复、工具回填、再次推理，直到得到最终文本。
+// State machine of the Agent Loop: model reply, tool backfill, and repeated inference until final text.
 //
-// AgentRunner 是整个 Agent 的核心：
-//   1. 接收用户 prompt
-//   2. 循环调用模型直到模型不再请求工具
-//   3. 每轮把 assistant 消息和工具结果追加进 history
-//   4. 返回最终文本、完整历史和实际轮次
-// 本章不实现 Planner、Memory 或 Orchestrator，它们都是在这个循环之上叠加的能力。
-// Agent 运行期间的基础领域错误；调用方可与配置或 SDK 错误分开处理。
+// AgentRunner is the core of the Agent:
+//   1. Receive user prompt
+//   2. Call the model in a loop until the model stops requesting tools
+//   3. Append assistant message and tool results to history in each turn
+//   4. Return final text, complete history, and actual turns
+// This chapter does not implement Planner, Memory, or Orchestrator; they are capabilities layered on top of this loop.
+// Base domain error during an Agent run; callers can handle it separately from configuration or SDK errors.
 export class AgentRunError extends Error {
   override readonly name: string = "AgentRunError";
 }
 
-// 在未得到最终回答前耗尽回合预算时抛出，避免无限模型/工具循环。
+// Throw when the turn budget is exhausted before receiving the final answer, to avoid infinite model/tool loops.
 export class AgentLimitError extends AgentRunError {
   override readonly name: string = "AgentLimitError";
 }
 
-// 模型因长度截断而无法安全视为最终回答时抛出。
+// Thrown when model output cannot be safely treated as a final answer due to length truncation.
 export class IncompleteModelReplyError extends AgentRunError {
   override readonly name: string = "IncompleteModelReplyError";
 }
 
 export interface ToolAuthorizer {
-  // 在 handler 前评估已校验调用；返回原因会进入拒绝的 tool result。
-  // 第 1 章 CLI 注入 TerminalAuthorizer，要求用户逐次批准 shell 命令。
+  // Evaluate the validated call before the handler; returned reasons enter rejected tool results.
+  // Chapter 1 CLI injects TerminalAuthorizer, requiring users to approve shell commands one by one.
   authorize(prepared: PreparedToolCall, context: ToolContext): Promise<ToolAuthorizationDecision>;
 }
 
-// 授权边界的明确结论；拒绝原因必须回填给模型以便其调整后续行动。
+// An explicit decision of the authorization boundary. The rejection reason must be backfilled to the model to adjust subsequent actions.
 export interface ToolAuthorizationDecision {
-  // 是否允许实际调用 handler，而不是仅允许模型提出调用请求。
+  // Whether to allow actually invoking the handler rather than only allowing the model to request calls.
   readonly allowed: boolean;
-  // 人类或策略拒绝的可解释文本；空原因会被视为无效授权响应。
+  // Explanatory text for human or policy denial; empty reasons count as invalid authorization responses.
   readonly reason: string;
 }
 
-// 单次 Agent 运行的可审计结果；与内部状态隔离的 history 用于验证消息配对。
+// Auditable result of a single Agent run; history isolated from internal state validates message pairing.
 export interface RunResult {
-  // 最终文本、可审计历史与实际使用回合数构成一次运行的完整结果。
-  // history 是冻结副本，调用方不能修改 AgentRunner 内部状态。
+  // Final text, auditable history, and actual turns used constitute the complete result of a run.
+  // history is a frozen copy; callers cannot modify AgentRunner internal state.
   readonly finalText: string;
   readonly history: readonly ChatMessage[];
   readonly turns: number;
 }
 
-// 构造 AgentRunner 所需的依赖与边界；外部 SDK 和进程实现必须由组合根注入。
+// Construct dependencies and boundaries required by AgentRunner; composition root must inject external SDK and process implementations.
 export interface AgentRunnerOptions {
-  // 核心循环只依赖抽象模型和工具；具体 SDK/进程在 bootstrap 层注入。
+  // The core loop depends only on abstract models and tools; bootstrap injects concrete SDKs and processes.
   readonly model: ModelClient;
   readonly tools: ToolRegistry;
   readonly systemPrompt: string;
@@ -64,29 +64,29 @@ export interface AgentRunnerOptions {
   readonly authorizer?: ToolAuthorizer;
 }
 
-// 单会话 Agent 状态机，按“模型回复 -> 工具回填 -> 再请求”推进到最终文本。
+// Single-session Agent state machine; advances to final text through "model reply -> tool backfill -> re-request".
 export class AgentRunner {
-  // 已规范化的模型边界，循环不依赖具体供应商 SDK。
+  // Normalized model boundary; loops do not depend on specific vendor SDKs.
   readonly #model: ModelClient;
-  // 可变源注册表；每轮会从它生成不可变工具快照。
+  // Mutable source registry; each turn generates an immutable tool snapshot from it.
   readonly #tools: ToolRegistry;
-  // 每轮模型请求前置的稳定系统约束，不写入可变历史。
+  // Stable system constraints prepended before each model request without writing to mutable history.
   readonly #systemPrompt: string;
-  // 规范化后的工作区根目录，所有工具调用共用该边界。
+  // Normalized workspace root directory; all tool calls share this boundary.
   readonly #workspace: string;
-  // 一次 run 最多允许的模型请求次数，而非工具调用次数。
+  // Maximum number of model requests allowed for a single run, not the number of tool calls.
   readonly #maxTurns: number;
-  // 注入工具上下文的调用主体标识。
+  // Caller subject identity injected into tool context.
   readonly #identity: string;
-  // 可选人工或策略授权边界；缺失时由库调用方承担信任决定。
+  // Optional human or policy authorization boundary; library callers assume trust decisions when missing.
   readonly #authorizer: ToolAuthorizer | undefined;
-  // 当前实例累计的用户、模型和工具事件；system prompt 始终按请求临时前置。
+  // Accumulated user, model, and tool events for the current instance; system prompt is always prepended per request.
   readonly #history: ChatMessage[] = [];
 
-  // 验证长期配置并固定依赖；构造失败应早于任何模型请求或副作用。
+  // Validates long-term configuration and fixes dependencies; construction failures should precede any model requests or side effects.
   constructor(options: AgentRunnerOptions) {
-    // 在实例创建时验证长期不变量，避免运行到中途才暴露无效配置。
-    // 默认 20 轮上限防止模型无限循环；identity 默认 "user"。
+    // Validate long-term invariants at instance creation to prevent invalid configuration from appearing mid-run.
+    // Default 20-turn limit prevents infinite model loops; identity defaults to "user".
     const maxTurns = options.maxTurns === undefined ? 20 : options.maxTurns;
     if (!Number.isInteger(maxTurns) || maxTurns <= 0) {
       throw new Error("maxTurns must be a positive integer");
@@ -108,28 +108,28 @@ export class AgentRunner {
     this.#authorizer = options.authorizer;
   }
 
-  // 返回冻结的历史副本，供审计读取而不允许外部改写实例状态。
+  // Returns a frozen history copy for audit reading without allowing external rewriting of instance state.
   get history(): readonly ChatMessage[] {
-    // 返回冻结副本，调用方不能修改内部消息历史。
-    // 测试可用它验证消息配对；生产代码通常只读取 finalText。
+    // Returns a frozen copy; callers cannot modify internal message history.
+    // Tests can use this to verify message pairing; production code usually reads only finalText.
     return Object.freeze([...this.#history]);
   }
 
-  // 执行一次用户请求，直到模型给出最终文本、触发不可恢复错误或耗尽回合预算。
+  // Execute a user request until the model gives final text, triggers an unrecoverable error, or exhausts the turn budget.
   async run(prompt: string): Promise<RunResult> {
-    // 历史仅保存用户与模型/工具事件；system prompt 在每次请求时单独前置。
-    // system prompt 不进入 history，是因为它每轮都一样，无需重复保存。
+    // History saves only user, model, and tool events; system prompts prepend separately before each request.
+    // system prompt does not enter history because it is identical each turn without needing duplicate persistence.
     this.#history.push(userMessage(prompt));
     const context: ToolContext = Object.freeze({
       workspace: this.#workspace,
       identity: this.#identity,
     });
 
-    // 一个回合对应一次模型请求；工具结果回填后才允许进入下一次请求。
+    // One turn corresponds to one model request; tool results must backfill before entering the next request.
     for (let turn = 1; turn <= this.#maxTurns; turn += 1) {
       validateToolPairing(this.#history);
-      // 冻结本回合工具视图，确保模型看到的定义与实际 prepare/invoke 使用同一集合。
-      // snapshot 每轮创建一次，代价很小但能防止并发修改引起的不一致。
+      // Freezes tool view for this turn, ensuring definitions seen by the model match the set used by actual prepare/invoke.
+      // Create a snapshot each turn; overhead is minimal and prevents inconsistencies from concurrent modifications.
       const tools = this.#tools.snapshot();
       const request: ModelRequest = Object.freeze({
         messages: Object.freeze([systemMessage(this.#systemPrompt), ...this.#history]),
@@ -137,9 +137,9 @@ export class AgentRunner {
       });
       const reply = await this.#model.complete(request);
 
-      // 首章不做续写或压缩；未完整回复不能被误当作最终答案。
-      // length 表示输出被 token 限制截断，content_filter 表示内容被过滤。
-      // 两者都不是正常结束，后续章节会加入恢复策略。
+      // Chapter 1 does not do continuation or compaction; incomplete replies must not be mistaken for final answers.
+      // length indicates output truncated by token limits; content_filter indicates filtered content.
+      // Neither is a normal termination; subsequent chapters add recovery strategies.
       if (reply.finishReason === "length") {
         throw new IncompleteModelReplyError("Model output reached the token limit");
       }
@@ -147,8 +147,8 @@ export class AgentRunner {
         throw new AgentRunError("Model response was blocked by the content filter");
       }
 
-      // assistant 消息必须先入历史，随后的每项工具结果才能与调用 ID 相邻配对。
-      // 先 push assistant 再回填 tool 消息，保证验证器看到的是完整配对。
+      // The assistant message must enter history first so each subsequent tool result pairs with its call ID.
+      // Pushes assistant first and backfills tool messages later, ensuring validator sees complete pairs.
       const assistant = reply.message;
       this.#history.push(assistant);
       if (assistant.toolCalls.length === 0) {
@@ -163,17 +163,17 @@ export class AgentRunner {
         });
       }
 
-      // 一条 assistant 消息中的每个调用都必须回填一次，错误和拒绝也不例外。
-      // 工具结果不只是一对一，而且顺序可以不同（先 A 后 B 或先 B 后 A 都可以）。
+      // Each call in an assistant message must backfill once, including errors and denials.
+      // Tool results are not only one-to-one, but their order can differ (either A then B or B then A).
       for (const call of assistant.toolCalls) {
-        // prepare 统一处理未知工具、JSON 与 schema 错误，并把错误安全回填给模型。
-        // prepare 本身不执行副作用，只有 invoke 才调用实际 handler。
+        // prepare uniformly handles unknown tools, JSON, and schema errors, safely backfilling errors to the model.
+        // prepare itself executes no side effects; only invoke calls the actual handler.
         const prepared = tools.prepare(call);
         let result: ToolResult;
         if (prepared.error !== undefined) {
           result = prepared.error;
         } else if (this.#authorizer !== undefined) {
-          // 有人工授权边界时先征求许可；拒绝也生成 tool result 供模型换方案。
+          // When a manual authorization boundary exists, request permission first; rejection also generates a tool result for the model to change plans.
           try {
             const decision = await this.#authorizer.authorize(prepared, context);
             if (decision.reason.trim().length === 0) {
@@ -183,19 +183,19 @@ export class AgentRunner {
               ? await tools.invoke(prepared, context)
               : toolError("permission_denied", decision.reason);
           } catch {
-            // 授权边界失败时拒绝而非放行，避免审批基础设施异常扩大权限。
-            // fail-closed：任何授权异常都默认拒绝，而不是冒险执行。
+            // Reject rather than allow when the authorization boundary fails to avoid expanding permissions on approval infrastructure exceptions.
+            // fail-closed: any authorization anomaly denies by default instead of risking execution.
             result = toolError("permission_denied", "Tool approval failed closed");
           }
         } else {
-          // 未配置 authorizer 时直接执行；测试和库调用方通常走这条路径。
+          // Execute directly when no authorizer is configured; tests and library callers usually take this path.
           result = await tools.invoke(prepared, context);
         }
         this.#history.push(toolMessage(result.content, call.id));
       }
     }
 
-    // 达到最大轮次仍没有最终文本时抛出类型化错误，调用方可决定如何恢复。
+    // Throws a typed error when reaching the maximum turns without final text. Callers can decide how to recover.
     throw new AgentLimitError(`Agent exceeded maxTurns=${this.#maxTurns}`);
   }
 }

@@ -1,4 +1,4 @@
-// 固定为 P02，暴露文件工具但不接入后续权限与 Hook 能力。
+// Fixed to P02, exposing file tools without connecting subsequent permission and Hook capabilities.
 import { runProfile } from "../cli.js";
 import { P02 } from "../core/profiles.js";
 

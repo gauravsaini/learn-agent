@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// CLI 是真实运行入口：负责参数解析、环境读取、模型与持久化资源装配，以及用户审批/审计边界。
+// CLI is the real runtime entry point: handles argument parsing, environment reading, model and persistent resource assembly, and user approval/audit boundaries.
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -34,17 +34,17 @@ import { WorkStealingRuntime } from "./features/work-stealing.js";
 
 class TerminalApprovalProvider implements ApprovalProvider {
   async decide(request: PermissionRequest): Promise<PermissionDecision> {
-    // 终端审批只处理完整请求；无 TTY 时保守拒绝，不阻塞自动化运行。
+    // Terminal approval only processes complete requests; conservative deny without TTY to avoid blocking automated runs.
     const definition = request.prepared.definition;
     const proposed = request.proposedDecision;
     if (definition === undefined || proposed === undefined) {
       throw new Error("approval request is incomplete");
     }
-    stderr.write(`\n工具调用需要批准: ${definition.name}\n`);
-    stderr.write(`原因: ${proposed.reason}\n`);
-    stderr.write(`参数: ${JSON.stringify(request.prepared.arguments)}\n`);
+    stderr.write(`\nTool call requires approval: ${definition.name}\n`);
+    stderr.write(`Reason: ${proposed.reason}\n`);
+    stderr.write(`Arguments: ${JSON.stringify(request.prepared.arguments)}\n`);
     if (!stdin.isTTY) {
-      stderr.write("无交互输入，默认拒绝。\n");
+      stderr.write("No interactive input, rejecting by default.\n");
       return new PermissionDecision(
         "deny",
         "No interactive approval input was available",
@@ -54,7 +54,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
     const terminal = createInterface({ input: stdin, output: stderr });
     try {
-      const answer = await terminal.question("允许本次调用? [y/N] ");
+      const answer = await terminal.question("Allow this call? [y/N] ");
       const normalized = answer.trim().toLowerCase();
       const allowed = normalized === "y" || normalized === "yes";
       return new PermissionDecision(
@@ -70,7 +70,7 @@ class TerminalApprovalProvider implements ApprovalProvider {
 
 class TerminalAuditSink implements AuditSink {
   async record(request: PermissionRequest, decision: PermissionDecision): Promise<void> {
-    // 审计输出保留工具、来源、行为和理由，不吞掉不完整请求。
+    // Audit output retains tools, sources, actions, and reasons, without swallowing incomplete requests.
     const definition = request.prepared.definition;
     if (definition === undefined) {
       throw new Error("audit request is incomplete");
@@ -82,13 +82,13 @@ class TerminalAuditSink implements AuditSink {
 }
 
 interface RunArguments {
-  // CLI 只接受固定章节号和非空 prompt，不提供隐式默认章节。
+  // CLI accepts only fixed chapter numbers and non-empty prompts, providing no implicit default chapter.
   readonly chapter: number;
   readonly prompt: string;
 }
 
 function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunArguments {
-  // 固定章节入口通过前置参数复用同一解析器，未知参数和缺值均显式失败。
+  // Fixed chapter entrypoints reuse the same parser via prepended arguments; unknown arguments and missing values fail explicitly.
   const args = fixedChapter === undefined ? argv : ["--chapter", String(fixedChapter), ...argv];
   let chapter: number | undefined;
   let prompt: string | undefined;
@@ -122,7 +122,7 @@ function parseRunArguments(argv: readonly string[], fixedChapter?: number): RunA
 }
 
 async function execute(profile: ChapterProfile, prompt: string): Promise<number> {
-  // 真实入口按 profile 一次性装配共享资源，并在成功或失败后统一逆序关闭。
+  // The real entry point assembles shared resources once by profile, and closes them in reverse order after success or failure.
   const workspace = resolve(process.cwd());
   const envPath = resolve(workspace, ".env");
   const requiresFallback = profile.capabilities.has("recovery");
@@ -135,7 +135,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
     profile.capabilities.has("task_dag_json") && !profile.capabilities.has("task_dag_sqlite")
       ? new JsonTaskStore(workspace)
       : undefined;
-  // 单个 SqliteTaskStore 同时注入 Lead、Subagent 和 Teammate factory，避免两个数据库分叉。
+  // A single SqliteTaskStore injects into Lead, Subagent, and Teammate factories to prevent two databases from forking.
   const workStealingRuntime = profile.capabilities.has("task_dag_sqlite")
     ? new WorkStealingRuntime({ store: new SqliteTaskStore(workspace) })
     : undefined;
@@ -148,7 +148,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
   const teammateRuntime = profile.capabilities.has("teammate")
     ? createTeammateRuntime(workspace, backgroundSupervisor, cronRuntime)
     : undefined;
-  // 协议运行时复用队友的 TeammateRuntime，并把请求登记到 JsonProtocolStore；两者共享同一 mailbox 状态。
+  // The protocol runtime reuses the teammate TeammateRuntime and registers requests in JsonProtocolStore; both share the same mailbox state.
   const protocolRuntime =
     profile.capabilities.has("protocol") && teammateRuntime !== undefined
       ? new ProtocolRuntime({
@@ -180,11 +180,11 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
       ...(backgroundSupervisor === undefined ? {} : { backgroundSupervisor }),
       ...(cronRuntime === undefined ? {} : { cronRuntime }),
       ...(teammateRuntime === undefined ? {} : { teammateRuntime }),
-      // 显式注入 ProtocolRuntime 后，bootstrap 会校验它与 teammateRuntime 共享 store，避免各持一份状态。
+      // After explicitly injecting ProtocolRuntime, bootstrap verifies it shares a store with teammateRuntime to prevent split state.
       ...(protocolRuntime === undefined ? {} : { protocolRuntime }),
     });
     if (teammateRuntime !== undefined) {
-      // 队友结果到达 Lead mailbox 后，立即请求独立 event turn。
+      // Immediately requests an independent event turn after teammate results reach Lead mailbox.
       teammateRuntime.bindWakeup(async () => {
         if (runner === undefined) {
           throw new Error("Teammate wakeup received before AgentRunner was built");
@@ -234,7 +234,7 @@ async function execute(profile: ChapterProfile, prompt: string): Promise<number>
   return exitCode;
 }
 
-// Cron 复用 supervisor 的 EventInbox，确保周期事件与后台任务进入同一条事件流。
+// Cron reuses supervisor EventInbox to ensure periodic events and background tasks enter the same event stream.
 function createCronRuntime(workspace: string, supervisor: JobSupervisor | undefined): CronRuntime {
   if (supervisor === undefined) {
     throw new Error("cron capability requires background supervisor");
@@ -247,7 +247,7 @@ function createCronRuntime(workspace: string, supervisor: JobSupervisor | undefi
   });
 }
 
-// 队友复用后台 supervisor 与 cron 的 inbox/supervisor，避免 mailbox、cron、后台任务各自处理事件。
+// Teammates reuse inbox/supervisor from background supervisor and cron to prevent mailbox, cron, and background tasks from handling events separately.
 function createTeammateRuntime(
   workspace: string,
   supervisor: JobSupervisor | undefined,
@@ -265,7 +265,7 @@ function createTeammateRuntime(
 }
 
 function requiredFallbackModel(fallbackModel: string | undefined): string {
-  // recovery 章节必须显式配置 fallback，不回退到主模型掩盖配置缺失。
+  // Recovery chapters must explicitly configure fallback, without falling back to the primary model to mask missing configs.
   if (fallbackModel === undefined) {
     throw new ConfigurationError(["OPENAI_FALLBACK_MODEL"]);
   }
@@ -329,7 +329,7 @@ async function runWithErrorHandling(run: () => Promise<number>): Promise<number>
   try {
     return await run();
   } catch (error) {
-    const label = error instanceof ConfigurationError ? "配置错误" : "运行失败";
+    const label = error instanceof ConfigurationError ? "Configuration Error" : "Runtime Failure";
     const message = error instanceof Error ? error.message : String(error);
     stderr.write(`${label}: ${message}\n`);
     return error instanceof ConfigurationError ? 2 : 1;

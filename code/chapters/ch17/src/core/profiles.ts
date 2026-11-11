@@ -1,4 +1,4 @@
-// 章节能力清单：每个 profile 都是冻结单例，组合根据此决定启用的运行时边界。
+// Chapter capability list: each profile is a frozen singleton; the composition root determines enabled runtime boundaries from it.
 export type Capability =
   | "loop"
   | "powershell"
@@ -19,25 +19,25 @@ export type Capability =
   | "cron"
   | "teammate"
   | "mailbox"
-  // protocol 与 plan_gate 共同表示结构化审批消息和副作用执行门控。
+  // protocol and plan_gate together represent structured approval messages and side-effect execution gating.
   | "protocol"
   | "plan_gate"
-  // task_dag_sqlite 与 work_stealing 表示带租约的 SQLite 任务图与去中心化认领。
+  // task_dag_sqlite and work_stealing indicate leased SQLite task graphs and decentralized claims.
   | "task_dag_sqlite"
   | "work_stealing";
 
 export interface ChapterProfile {
-  // chapter 与能力集合共同构成固定快照，bootstrap 通过引用身份拒绝伪造 profile。
+  // chapter and capability sets together form a fixed snapshot; bootstrap rejects forged profiles via reference identity.
   readonly chapter: number;
   readonly capabilities: ReadonlySet<Capability>;
 }
 
 class CapabilitySet implements ReadonlySet<Capability> {
-  // 内部 Set 不向外暴露，所有迭代方法只提供只读视图。
+  // Internal Set is not exposed; all iteration methods provide read-only views.
   readonly #values: Set<Capability>;
 
   constructor(values: readonly Capability[]) {
-    // 复制后冻结输入语义，调用方后续修改原数组不会改变章节能力。
+    // Freeze input semantics after copying; subsequent caller modifications to the original array do not change chapter capabilities.
     this.#values = new Set(values);
   }
 
@@ -46,22 +46,22 @@ class CapabilitySet implements ReadonlySet<Capability> {
   }
 
   has(value: Capability): boolean {
-    // 能力判断集中委托内部 Set，组合根不依赖数组顺序。
+    // Delegate capability checks centrally to internal Sets; the composition root does not depend on array order.
     return this.#values.has(value);
   }
 
   entries(): SetIterator<[Capability, Capability]> {
-    // ReadonlySet 迭代协议保持与原生 Set 一致。
+    // ReadonlySet iteration protocol remains consistent with native Set.
     return this.#values.entries();
   }
 
   keys(): SetIterator<Capability> {
-    // key/value 对于集合相同，均返回内部只读迭代器。
+    // key/value match for sets, both returning internal read-only iterators.
     return this.#values.keys();
   }
 
   values(): SetIterator<Capability> {
-    // 返回迭代器而非底层 Set，防止调用方获得可变集合引用。
+    // Returns an iterator instead of the underlying Set to prevent callers from obtaining a mutable collection reference.
     return this.#values.values();
   }
 
@@ -69,7 +69,7 @@ class CapabilitySet implements ReadonlySet<Capability> {
     callbackfn: (value: Capability, value2: Capability, set: ReadonlySet<Capability>) => void,
     thisArg?: unknown,
   ): void {
-    // 回调第三参数仍传当前只读包装，不能通过它修改内部 Set。
+    // Pass the current read-only wrapper as callback third parameter; internal Sets cannot be modified through it.
     this.#values.forEach((value) => {
       callbackfn.call(thisArg, value, value, this);
     });
@@ -248,7 +248,7 @@ export const P16: ChapterProfile = Object.freeze({
   capabilities: new CapabilitySet([...P15.capabilities, "protocol", "plan_gate"]),
 });
 
-// P17 在 P16 基础上追加 SQLite 任务图与 work stealing，让 Lead、子代理和队友共享同一认领路径。
+// P17 appends SQLite task graph and work stealing to P16, letting Lead, subagents, and teammates share the same claim path.
 export const P17: ChapterProfile = Object.freeze({
   chapter: 17,
   capabilities: new CapabilitySet([...P16.capabilities, "task_dag_sqlite", "work_stealing"]),
